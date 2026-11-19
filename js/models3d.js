@@ -51,7 +51,7 @@ export function furnitureMaterials(style) {
     plant2: std('#6d9558', { roughness: 0.85, flatShading: true }),
     pot: std('#c9c2b6', { roughness: 0.8 }),
     counterTop: std(style.key === 'industrial' ? '#3a3b3d' : style.key === 'mediterranean' ? '#e9e1d2' : '#ecebe8', { roughness: 0.25 }),
-    cabinet: std(['scandi', 'modern'].includes(style.key) ? '#f2f0ec' : style.key === 'industrial' ? '#2c2e30' : style.wood, { roughness: 0.5 }),
+    cabinet: std(['scandi', 'modern'].includes(style.key) ? '#f2f0ec' : style.key === 'industrial' ? '#2c2e30' : style.key === 'contemporary' ? '#3a3b3e' : style.wood, { roughness: 0.5 }),
     cabinet2: std(style.fabric2, { roughness: 0.5 }),
     shade: new THREE.MeshStandardMaterial({ color: '#fff3dc', emissive: '#ffdca0', emissiveIntensity: 0.6, roughness: 0.9 }),
     water: new THREE.MeshStandardMaterial({ color: '#7fc1d6', roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.85 }),

@@ -19,9 +19,9 @@ import { WET } from './data.js';
 import { furnitureTag, exportIFC as writeIFC } from './ifc.js';
 
 // Readable material names for BIM export (texture kind -> finish)
-const FINISH = { render: 'render', stucco: 'stucco', boards: 'timber cladding', siding: 'lap siding', brick: 'brick', stone: 'stone', seam: 'standing-seam metal', clay: 'clay tiles', shingle: 'shingles', membrane: 'membrane', oak: 'oak boards', teak: 'teak boards', tile: 'tiles', terracotta: 'terracotta tiles', concrete: 'concrete' };
+const FINISH = { boardform: 'board-formed concrete', panel: 'large-format panels', battens: 'timber battens', wideoak: 'wide-plank oak', porcelain: 'large-format porcelain', render: 'render', stucco: 'stucco', boards: 'timber cladding', siding: 'lap siding', brick: 'brick', stone: 'stone', seam: 'standing-seam metal', clay: 'clay tiles', shingle: 'shingles', membrane: 'membrane', oak: 'oak boards', teak: 'teak boards', tile: 'tiles', terracotta: 'terracotta tiles', concrete: 'concrete' };
 const finish = (k) => FINISH[k] || k;
-const ROOF_TYPE = { flat: 'FLAT_ROOF', gable: 'GABLE_ROOF', hip: 'HIP_ROOF', shed: 'SHED_ROOF' };
+const ROOF_TYPE = { flat: 'FLAT_ROOF', float: 'FLAT_ROOF', gable: 'GABLE_ROOF', hip: 'HIP_ROOF', shed: 'SHED_ROOF' };
 
 export const PLINTH = 0.15;
 const DEG = Math.PI / 180;
@@ -29,6 +29,8 @@ const BACK_ROT = { N: 0, S: Math.PI, W: Math.PI / 2, E: -Math.PI / 2 };
 const AZ = { N: 0, E: 90, S: 180, W: 270 };
 
 const ACCENT = {
+  // dark panel volume floats over a board-formed concrete base
+  contemporary: (r, lvl, n) => (n > 1 ? lvl >= 1 : ['foyer', 'garage'].includes(r?.type)),
   modern: (r) => ['foyer', 'stair'].includes(r?.type),
   scandi: (r) => ['foyer', 'garage'].includes(r?.type),
   japandi: (r, lvl, n) => (n > 1 ? lvl === 0 : ['foyer', 'garage'].includes(r?.type)),
@@ -46,6 +48,58 @@ function meterUV(geo, sx, sy, sz, ox = 0, oy = 0, oz = 0) {
     uv.setXY(k, uv.getX(k) * dims[f][0] + dims[f][2], uv.getY(k) * dims[f][1] + dims[f][3]);
   }
   uv.needsUpdate = true;
+}
+
+/**
+ * One solid wall: the elevation outline (x along the wall from x0 to x1, y = height) with door notches and
+ * window holes, extruded through the thickness `depth` along +z. A single closed solid has no internal
+ * faces, so no seams show where boxes used to abut around openings. UVs stay in metres (x, e0 + y).
+ * Triangles are sorted into groups: 0 reveals/top/bottom, 1 caps at x0/x1, 2 lid at +z, 3 lid at -z.
+ * `cuts`: [{ s, e, lo, hi }] sorted by s; lo = 0 opens to the floor, hi >= h opens to the top.
+ */
+function wallGeometry(x0, x1, h, e0, depth, cuts) {
+  const full = (c) => c.lo === 0 && c.hi >= h - 0.005;
+  const segs = [];
+  let start = x0, inner = [];
+  for (const c of cuts) {
+    if (full(c)) { if (c.s - start > 0.005) segs.push([start, c.s, inner]); start = c.e; inner = []; } else inner.push(c);
+  }
+  if (x1 - start > 0.005) segs.push([start, x1, inner]);
+  const V = (x, y) => new THREE.Vector2(x, e0 + y);
+  const shapes = segs.map(([sx0, sx1, cs]) => {
+    const pts = [V(sx0, 0)];
+    for (const c of cs.filter((c) => c.lo === 0)) pts.push(V(c.s, 0), V(c.s, c.hi), V(c.e, c.hi), V(c.e, 0));
+    pts.push(V(sx1, 0), V(sx1, h));
+    for (const c of cs.filter((c) => c.lo > 0 && c.hi >= h - 0.005).reverse()) pts.push(V(c.e, h), V(c.e, c.lo), V(c.s, c.lo), V(c.s, h));
+    pts.push(V(sx0, h));
+    const shape = new THREE.Shape(pts);
+    for (const c of cs.filter((c) => c.lo > 0 && c.hi < h - 0.005)) shape.holes.push(new THREE.Path([V(c.s, c.lo), V(c.e, c.lo), V(c.e, c.hi), V(c.s, c.hi)]));
+    return shape;
+  });
+  const src = new THREE.ExtrudeGeometry(shapes, { depth, bevelEnabled: false, steps: 1, curveSegments: 1 });
+  // regroup triangles by role
+  const pos = src.attributes.position, nTri = pos.count / 3;
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), N = new THREE.Vector3();
+  const slot = new Uint8Array(nTri);
+  for (let i = 0; i < nTri; i++) {
+    A.fromBufferAttribute(pos, 3 * i); B.fromBufferAttribute(pos, 3 * i + 1); C.fromBufferAttribute(pos, 3 * i + 2);
+    N.subVectors(C, B).cross(B.clone().sub(A)).normalize();
+    const cx = (A.x + B.x + C.x) / 3;
+    if (Math.abs(N.z) > 0.9) slot[i] = (A.z + B.z + C.z) / 3 > depth / 2 ? 2 : 3;
+    else if (Math.abs(N.x) > 0.9 && (Math.abs(cx - x0) < 1e-4 || Math.abs(cx - x1) < 1e-4)) slot[i] = 1;
+    else slot[i] = 0;
+  }
+  const out = new THREE.BufferGeometry();
+  const order = [];
+  for (let g = 0; g < 4; g++) { const first = order.length; for (let i = 0; i < nTri; i++) if (slot[i] === g) order.push(i); if (order.length > first) out.addGroup(first * 3, (order.length - first) * 3, g); }
+  for (const name of ['position', 'normal', 'uv']) {
+    const a = src.attributes[name]; if (!a) continue;
+    const isz = a.itemSize, arr = new Float32Array(order.length * 3 * isz);
+    order.forEach((t, j) => arr.set(a.array.subarray(t * 3 * isz, (t + 1) * 3 * isz), j * 3 * isz));
+    out.setAttribute(name, new THREE.BufferAttribute(arr, isz));
+  }
+  src.dispose();
+  return out;
 }
 
 function rng(seed) { let s = seed >>> 0 || 7; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
@@ -288,24 +342,32 @@ export class Viewer3D {
       roofTop: std({ map: tex('gravel', '#a29e96'), roughness: 1 }),
       roof: std({ map: tex(st.roofMat.tex, st.roofMat.color), roughness: st.roofMat.tex === 'seam' ? 0.45 : 0.8, metalness: st.roofMat.tex === 'seam' ? 0.45 : 0 }),
       frame: std({ color: st.frame, roughness: 0.4, metalness: 0.35 }),
-      glass: new THREE.MeshStandardMaterial({ color: '#a9c3cb', roughness: 0.03, metalness: 0.15, transparent: true, opacity: 0.3, depthWrite: false, envMapIntensity: 1.6 }),
+      glass: new THREE.MeshStandardMaterial({ color: st.glass || '#a9c3cb', roughness: 0.03, metalness: 0.15, transparent: true, opacity: 0.3, depthWrite: false, envMapIntensity: 1.6 }),
       door: std({ color: st.door, roughness: 0.55 }),
       intDoor: std({ color: ['farmhouse', 'mediterranean', 'japandi'].includes(key) ? st.wood : '#f2f0eb', roughness: 0.6 }),
-      garageDoor: std({ map: tex('garagedoor', ['modern', 'industrial', 'japandi', 'scandi'].includes(key) ? '#3c3e41' : '#ece8df'), roughness: 0.5, metalness: 0.2 }),
+      garageDoor: st.garageTex ? std({ map: tex(st.garageTex.tex, st.garageTex.color), roughness: 0.7 })
+        : std({ map: tex('garagedoor', ['modern', 'industrial', 'japandi', 'scandi'].includes(key) ? '#3c3e41' : '#ece8df'), roughness: 0.5, metalness: 0.2 }),
       rail: new THREE.MeshStandardMaterial({ color: '#c6dbe1', roughness: 0.05, transparent: true, opacity: 0.22, depthWrite: false }),
       stair: std({ map: tex(st.floor.tex, st.floor.color), roughness: 0.55 }),
       water: new THREE.MeshStandardMaterial({ color: '#4fa6c4', roughness: 0.04, metalness: 0.1, transparent: true, opacity: 0.86 }),
       poolTile: std({ color: '#9fd4e2', roughness: 0.3, side: THREE.BackSide }),
       timber: std({ map: tex('boards', st.wood), roughness: 0.75 }),
+      shadowGap: std({ color: '#1d1e20', roughness: 0.95 }),
     };
+    // style-specific details (contemporary: timber soffit, bronze window frames, battened pivot door)
+    if (st.soffit) M.soffit = std({ map: tex(st.soffit.tex, st.soffit.color), roughness: 0.8 });
+    if (st.windowBox) M.windowBox = std({ color: st.windowBox, roughness: 0.35, metalness: 0.55 });
+    if (st.pivot) M.pivotDoor = std({ map: tex('battens', st.door), roughness: 0.7 });
+    if (st.frosted) M.frosted = new THREE.MeshStandardMaterial({ color: '#E4E9EA', roughness: 0.6, transparent: true, opacity: 0.82 });
     const names = {
       ext: `Facade - ${finish(st.ext.tex)}`, accent: `Facade accent - ${finish(st.accent.tex)}`, int: 'Interior wall paint', wetWall: 'Wall tiles',
       floor: `Flooring - ${finish(st.floor.tex)}`, wetFloor: `Wet area flooring - ${finish(st.wetFloor.tex)}`, garageFloor: 'Garage floor - concrete',
       deck: 'Timber decking', paving: 'Paving', plinth: 'Plinth - concrete', ceiling: 'Ceiling paint', roofTop: 'Roof gravel',
       roof: `Roofing - ${finish(st.roofMat.tex)}`, frame: 'Window and door frames', glass: 'Glazing', door: 'Entrance door', intDoor: 'Interior doors',
       garageDoor: 'Garage door', rail: 'Glass balustrade', stair: `Stair treads - ${finish(st.floor.tex)}`, water: 'Pool water', poolTile: 'Pool tiles', timber: 'Timber',
+      shadowGap: 'Shadow-gap reveal', soffit: 'Soffit - timber battens', windowBox: 'Window surrounds - bronze', pivotDoor: 'Pivot door - timber battens', frosted: 'Frosted glazing',
     };
-    for (const [k, v] of Object.entries(names)) M[k].name = v;
+    for (const [k, v] of Object.entries(names)) if (M[k]) M[k].name = v;
     // poché for clipped solids: back faces render as a dark fill
     M.roof.side = THREE.DoubleSide;
     for (const k of ['ext', 'accent', 'int', 'wetWall', 'ceiling', 'plinth', 'roofTop']) {
@@ -357,7 +419,7 @@ export class Viewer3D {
       const top = k === 0 ? PLINTH : this.elev(k);
       const th = k === 0 ? PLINTH : SLAB;
       const grp = k === 0 ? this.floorGroups[0] : k < this.F ? this.floorGroups[k] : this.floorGroups[this.F - 1];
-      const flat = d.style.roof === 'flat';
+      const flat = ['flat', 'float'].includes(d.style.roof);
       const area = rects.reduce((a, r) => a + r.w * r.h, 0);
       const tag = k === 0 ? { cls: 'IfcSlab', type: 'BASESLAB', name: 'Ground slab' }
         : k < this.F ? { cls: 'IfcSlab', type: 'FLOOR', name: `Floor slab - Level ${k}` }
@@ -414,28 +476,28 @@ export class Viewer3D {
       };
       this.wallTags[k].set(w, tag);
       const ops = f.openings.filter((o) => o.axis === w.axis && Math.abs(o.c - w.c) < 1e-3 && o.s < w.e - 1e-3 && o.e > w.s + 1e-3).sort((p, q) => p.s - q.s);
+      // Ends overlap the neighbouring wall by half a thickness to close corners and joins. The wall is a hair
+      // thinner and shorter (eps) so its end caps sit inside the neighbour rather than flush with its face.
+      const eps = 0.004, tt = t - eps;
+      const x0 = w.s - t / 2 + eps, x1 = w.e + t / 2 - eps;
+      // End caps wear the facade finish (at corners they are the visible return); reveals keep the plain finish.
+      const outMat = ext ? (!w.a ? matA : matB) : plain;
+      const cuts = ops.map((o) => ({ s: Math.max(o.s, w.s), e: Math.min(o.e, w.e), lo: o.sill > 0.005 ? o.sill : 0, hi: Math.min(o.head, h) }))
+        .filter((c) => c.e - c.s > 0.005 && c.hi - c.lo > 0.005);
+      const geo = wallGeometry(x0, x1, h, e0, tt, cuts);
+      // material slots: 0 reveals/top/bottom, 1 wall-end caps, 2 lid at +z, 3 lid at -z ('h': +z is side a; 'v' turns +z to +x, side b)
+      const m = new THREE.Mesh(geo, [plain, outMat, w.axis === 'h' ? matA : matB, w.axis === 'h' ? matB : matA]);
+      m.userData.ifc = tag;
+      if (w.axis === 'h') m.position.set(-this.cx, 0, this.wz(w.c) - tt / 2);
+      else { m.rotation.y = Math.PI / 2; m.position.set(this.wx(w.c) - tt / 2, 0, this.cy); }
+      m.castShadow = true; m.receiveShadow = true;
+      grp.add(m);
+      // walk-mode collision boxes: the solid parts that reach the floor
       const pieces = [];
-      let cur = w.s - t / 2;
-      for (const o of ops) {
-        const os = Math.max(o.s, w.s), oe = Math.min(o.e, w.e);
-        if (os - cur > 0.005) pieces.push([cur, os, 0, h]);
-        if (o.sill > 0.005) pieces.push([os, oe, 0, o.sill]);
-        if (o.head < h - 0.005) pieces.push([os, oe, o.head, h]);
-        cur = oe;
-      }
-      if (w.e + t / 2 - cur > 0.005) pieces.push([cur, w.e + t / 2, 0, h]);
-      for (const [a0, a1, y0, y1] of pieces) {
-        const len = a1 - a0, hh = y1 - y0;
-        const geo = w.axis === 'h' ? new THREE.BoxGeometry(len, hh, t) : new THREE.BoxGeometry(t, hh, len);
-        if (w.axis === 'h') meterUV(geo, len, hh, t, a0, e0 + y0, 0); else meterUV(geo, t, hh, len, 0, e0 + y0, -a1);
-        const mats = w.axis === 'h' ? [plain, plain, plain, plain, matA, matB] : [matB, matA, plain, plain, plain, plain];
-        const m = new THREE.Mesh(geo, mats);
-        m.userData.ifc = tag;
-        const mid = (a0 + a1) / 2;
-        if (w.axis === 'h') m.position.set(this.wx(mid), e0 + y0 + hh / 2, this.wz(w.c));
-        else m.position.set(this.wx(w.c), e0 + y0 + hh / 2, this.wz(mid));
-        m.castShadow = true; m.receiveShadow = true;
-        grp.add(m);
+      let cur = x0;
+      for (const c of cuts) { if (c.s - cur > 0.005) pieces.push([cur, c.s, 0]); if (c.lo > 0) pieces.push([c.s, c.e, 0]); cur = c.e; }
+      if (x1 - cur > 0.005) pieces.push([cur, x1, 0]);
+      for (const [a0, a1, y0] of pieces) {
         if (y0 < 0.01) {
           const bx = w.axis === 'h'
             ? { minX: this.wx(a0), maxX: this.wx(a1), minZ: this.wz(w.c) - t / 2, maxZ: this.wz(w.c) + t / 2 }
@@ -460,7 +522,8 @@ export class Viewer3D {
       const sideSign = (s) => (o.axis === 'h' ? (s === 'a' ? 1 : -1) : (s === 'a' ? -1 : 1));
       const outS = ext ? sideSign(!o.a ? 'a' : 'b') : 0;
       const B = (w, h, d, m, x, y, z, cast = true) => { const mm = this.box(g, w, h, d, m, x, y + h / 2, z, { uv: false }); mm.castShadow = cast; return mm; };
-      const fr = 0.055;
+      const slim = !!st.slimFrames;
+      const fr = slim ? 0.03 : 0.055;
       // IFC: host wall + the void this opening cuts in it (storey-local plan coords)
       const host = f.walls.find((w) => w.type !== 'open' && w.axis === o.axis && Math.abs(w.c - o.c) < 1e-3 && o.s < w.e - 1e-3 && o.e > w.s + 1e-3);
       const ht = host ? (host.type === 'ext' ? T_EXT : T_INT) : t;
@@ -478,16 +541,34 @@ export class Viewer3D {
         B(fr, h, t * 0.5, M.frame, len / 2 - fr / 2, o.sill, 0);
         B(len, fr, t * 0.5, M.frame, 0, o.head - fr, 0);
         B(len, fr, t * 0.5, M.frame, 0, o.sill, 0);
-        const gl = B(len - 0.08, h - 0.08, 0.02, M.glass, 0, o.sill + 0.04, 0, false); gl.renderOrder = 2;
+        const gi = slim ? 0.05 : 0.08;
+        const gl = B(len - gi, h - gi, 0.02, M.glass, 0, o.sill + gi / 2, 0, false); gl.renderOrder = 2;
         const mull = st.mullions;
-        const nV = mull === 'grid' ? Math.max(1, Math.round(len / 0.55)) - 1 : mull === 'grid-v' ? Math.max(1, Math.round(len / 0.45)) - 1 : mull === 'cross' ? 1 : len > 2.2 ? Math.round(len / 1.6) - 1 : 0;
-        for (let i = 1; i <= nV; i++) B(0.035, h - 0.08, 0.05, M.frame, -len / 2 + (len * i) / (nV + 1), o.sill + 0.04, 0);
+        const nV = mull === 'grid' ? Math.max(1, Math.round(len / 0.55)) - 1 : mull === 'grid-v' ? Math.max(1, Math.round(len / 0.45)) - 1 : mull === 'cross' ? 1
+          : slim ? (len > 2.8 ? Math.round(len / 2.4) - 1 : 0) : len > 2.2 ? Math.round(len / 1.6) - 1 : 0;
+        for (let i = 1; i <= nV; i++) B(slim ? 0.025 : 0.035, h - gi, 0.05, M.frame, -len / 2 + (len * i) / (nV + 1), o.sill + gi / 2, 0);
         const nH = mull === 'grid' ? Math.max(1, Math.round(h / 0.6)) - 1 : mull === 'cross' ? 1 : 0;
         for (let i = 1; i <= nH; i++) B(len - 0.08, 0.035, 0.05, M.frame, 0, o.sill + (h * i) / (nH + 1), 0);
         const part = !nV && !nH ? 'SINGLE_PANEL' : nV === 1 && !nH ? 'DOUBLE_PANEL_VERTICAL' : !nV && nH === 1 ? 'DOUBLE_PANEL_HORIZONTAL' : nV === 2 && !nH ? 'TRIPLE_PANEL_VERTICAL' : 'NOTDEFINED';
         Object.assign(tag, { cls: 'IfcWindow', type: 'WINDOW', name: ext ? 'Window' : 'Internal window', attrs: { h, w: len, part }, pset: { Pset_WindowCommon: { IsExternal: ext } } });
         if (ext) {
-          if (o.sill > 0.3) B(len + 0.08, 0.04, 0.16, M.frame, 0, o.sill - 0.04, outS * (t / 2 + 0.03));
+          if (o.sill > 0.3 && !slim) B(len + 0.08, 0.04, 0.16, M.frame, 0, o.sill - 0.04, outS * (t / 2 + 0.03));
+          const roomType = f.rooms.find((r) => r.id === o.room)?.type;
+          if (M.frosted && st.frosted.includes(roomType)) gl.material = M.frosted;
+          const fins = st.fins && st.fins.includes(roomType);
+          if (fins) {
+            // vertical timber fins screening slot and bathroom windows
+            const fTag = { cls: 'IfcShadingDevice', type: 'USERDEFINED', objectType: 'Fins', name: 'Timber fins' };
+            const y0 = Math.max(0.02, o.sill - 0.15), fh = o.head + 0.15 - y0, n = Math.max(3, Math.round(len / 0.12));
+            for (let i = 0; i <= n; i++) B(0.04, fh, 0.12, M.timber, -len / 2 + 0.03 + ((len - 0.06) * i) / n, y0, outS * (t / 2 + 0.13)).userData.ifc = fTag;
+          } else if (M.windowBox && o.sill > 0.3 && len >= 0.6 && h < 1.8) {
+            // projecting bronze picture frame around ribbon and strip windows
+            const bt = 0.07, dp = 0.34, z = outS * (t / 2 + dp / 2 - 0.03);
+            B(len + 2 * bt, bt, dp, M.windowBox, 0, o.head, z);
+            B(len + 2 * bt, bt, dp, M.windowBox, 0, o.sill - bt, z);
+            B(bt, h, dp, M.windowBox, -len / 2 - bt / 2, o.sill, z);
+            B(bt, h, dp, M.windowBox, len / 2 + bt / 2, o.sill, z);
+          }
           if (st.shutters && o.sill > 0.3 && len < 1.9) {
             const shTag = { cls: 'IfcShadingDevice', type: 'SHUTTER', name: 'Window shutters' };
             for (const sx of [-1, 1]) {
@@ -524,11 +605,15 @@ export class Viewer3D {
           g.add(piv);
         }
       } else if (o.kind === 'front') {
-        door('Entrance door', 'SINGLE_SWING_LEFT');
+        door(M.pivotDoor ? 'Pivot entrance door' : 'Entrance door', 'SINGLE_SWING_LEFT');
         const h = o.head;
         B(0.07, h, t + 0.02, M.frame, -len / 2 - 0.03, 0, 0); B(0.07, h, t + 0.02, M.frame, len / 2 + 0.03, 0, 0); B(len + 0.14, 0.07, t + 0.02, M.frame, 0, h, 0);
-        B(len - 0.02, h - 0.02, 0.06, M.door, 0, 0, 0);
-        B(0.03, 0.9, 0.05, M.metal || M.frame, len / 2 - 0.15, 0.6, outS * 0.06);
+        const leaf = B(len - 0.02, h - 0.02, 0.06, M.door, 0, 0, 0);
+        if (M.pivotDoor) {
+          // timber-battened pivot leaf with a long bar pull
+          leaf.material = M.pivotDoor; meterUV(leaf.geometry, len - 0.02, h - 0.02, 0.06);
+          B(0.035, 1.5, 0.05, M.frame, len / 2 - 0.16, 0.45, outS * 0.06);
+        } else B(0.03, 0.9, 0.05, M.metal || M.frame, len / 2 - 0.15, 0.6, outS * 0.06);
         // canopy & step
         B(len + 1.6, 0.14, 1.4, key === 'mediterranean' || key === 'farmhouse' ? M.timber : M.frame, 0, h + 0.28, outS * (t / 2 + 0.7)).userData.ifc = { cls: 'IfcBuildingElementProxy', type: 'USERDEFINED', objectType: 'Canopy', name: 'Entrance canopy' };
         B(len + 1.4, PLINTH - 0.01, 1.2, M.paving, 0, -PLINTH, outS * (t / 2 + 0.6)).userData.ifc = { cls: 'IfcSlab', type: 'USERDEFINED', objectType: 'Step', name: 'Entrance step' };
@@ -659,6 +744,22 @@ export class Viewer3D {
     const eave = this.elev(this.F);
     const roofPlane = (name = 'Roof plane') => ({ cls: 'IfcSlab', type: 'ROOF', name, part: this.roofTag, pset: { Pset_SlabCommon: { IsExternal: true } } });
     const gableWall = { cls: 'IfcWall', type: 'STANDARD', name: 'Gable wall', pset: { Pset_WallCommon: { IsExternal: true } } };
+    if (st.roof === 'float') {
+      // thin roof plate on a recessed shadow gap, deep overhangs front and back, timber soffit
+      const enc = rooms.filter((r) => r.type !== 'terrace');
+      const gap = 0.14, th = 0.24, inset = 0.08;
+      const gapTag = { cls: 'IfcCovering', type: 'USERDEFINED', objectType: 'Reveal', name: 'Shadow-gap reveal' };
+      for (const r of rectUnion(enc)) {
+        this.box(grp, r.w + T_EXT - 2 * inset, gap, r.h + T_EXT - 2 * inset, M.shadowGap, this.wx(r.x + r.w / 2), eave + gap / 2, this.wz(r.y + r.h / 2), { uv: false, cast: false })
+          .userData.ifc = gapTag;
+      }
+      const bb = bbox(enc), ovF = st.overhang, ovS = Math.min(0.6, st.overhang);
+      const W = bb.w + T_EXT + 2 * ovS, Dd = bb.h + T_EXT + 2 * ovF;
+      const x0 = bb.x - T_EXT / 2 - ovS, y0 = bb.y - T_EXT / 2 - ovF;
+      this.box(grp, W, th, Dd, [M.frame, M.frame, M.roof, M.soffit || M.ceiling, M.frame, M.frame], this.wx(x0 + W / 2), eave + gap + th / 2, this.wz(y0 + Dd / 2), { ox: x0, oz: y0 })
+        .userData.ifc = roofPlane('Floating roof plate');
+      return;
+    }
     if (st.roof === 'flat') {
       // parapet on exterior wall lines
       for (const w of topF.walls.filter((x) => x.type === 'ext')) {

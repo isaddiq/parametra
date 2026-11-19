@@ -27,7 +27,7 @@ The only external request is Google Fonts (Archivo). If the fonts are blocked, t
 
 | View                            | What it does                                                                                                                                                                                 |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Landing** (`#/`)      | Live 3D turntable of a sample design, how it works, the seven styles drawn as elevations, a real plan output, and six example briefs                                                         |
+| **Landing** (`#/`)      | Live 3D turntable of a sample design, how it works, the eight styles drawn as elevations, a real plan output, and six example briefs                                                         |
 | **Brief** (`#/brief`)   | Six guided steps: plot, size, rooms, kitchen and outdoors, style, priorities. A live preview of the best layout updates as you choose                                                        |
 | **Studio** (`#/studio`) | Four recommended designs as tabs. A single viewer switches between 3D, floor plan and side by side. A details panel has Overview, Rooms, Scores and Materials tabs. Export lives in one menu |
 
@@ -43,8 +43,9 @@ It also has a sun-position slider tied to the plot's orientation and hemisphere,
 
 - **Lawn:** a shader adds large-scale colour variation and hides texture tiling, with instanced 3D grass tufts on top.
 - **Trees:** branching trunks with bark textures and leaf-card crowns that cast dappled shadows. Species follow the style: birch, oak, maple, olive, cypress, pine, palm.
-- **Planting:** shrubs and mulched beds.
+- **Planting:** shrubs, ornamental grasses and mulched beds.
 - **Boundaries by style:**
+  - board-formed concrete wall with timber battens
   - rendered wall with a timber slat screen
   - timber board fence
   - stucco or brick walls with coping and piers

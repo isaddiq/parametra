@@ -50,6 +50,19 @@ export const ZONE_COLORS = {
 //  Design styles — each drives roof form, glazing, palette, materials
 // ─────────────────────────────────────────────────────────────
 export const STYLES = {
+  contemporary: {
+    name: 'Contemporary', tagline: 'Floating roof, concrete and dark panels, framed glass',
+    roof: 'float', pitch: 0, overhang: 1.2, glazing: 0.7, fullHeight: true, mullions: 'none',
+    // window language: slim frames, ribbon + slot + strip windows, bronze picture frames, timber fins at stair and entry, frosted baths
+    windows: 'contemporary', slimFrames: true, windowBox: '#7C6650', fins: ['stair', 'foyer'], frosted: ['bath', 'ensuite', 'powder'], pivot: true,
+    glass: '#8FA4AA', soffit: { tex: 'battens', color: '#A07A55' }, garageTex: { tex: 'battens', color: '#8B6646' },
+    ext: { tex: 'boardform', color: '#B9B4AB' }, accent: { tex: 'panel', color: '#34363A' },
+    roofMat: { tex: 'membrane', color: '#3E4044' }, frame: '#232427', door: '#8B6646',
+    wallInt: '#F3F2EF', floor: { tex: 'wideoak', color: '#CDB28E' }, wetFloor: { tex: 'porcelain', color: '#BAB6AF' },
+    fabric: '#D8D4CD', fabric2: '#46515C', wood: '#B8936B', metal: '#232427', rug: '#A9A39A',
+    details: 'Slim anthracite frames, bronze-framed ribbon windows, timber fins and a timber pivot door',
+    swatch: ['#B9B4AB', '#34363A', '#8B6646', '#7C6650'], rate: 2450, garden: 'architectural',
+  },
   modern: {
     name: 'Modern Minimal', tagline: 'White volumes, flat roofs, big glass',
     roof: 'flat', pitch: 0, overhang: 0.1, glazing: 0.64, fullHeight: true, mullions: 'none',

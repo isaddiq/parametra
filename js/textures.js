@@ -121,6 +121,77 @@ const PAINTERS = {
     }
     noise(ctx, S, 0.06, rand); return 1;
   },
+  boardform(ctx, S, c, rand) { // board-formed concrete: horizontal board imprints, butt joints, tie holes
+    const n = 8, bh = S / n;
+    for (let i = 0; i < n; i++) {
+      const y0 = i * bh;
+      ctx.fillStyle = shade(c, (rand() - 0.5) * 0.09); ctx.fillRect(0, y0, S, bh);
+      ctx.lineWidth = 1;
+      for (let k = 0; k < 9; k++) {
+        const y = y0 + 3 + rand() * (bh - 6);
+        ctx.strokeStyle = shade(c, rand() > 0.5 ? -0.16 : 0.08); ctx.globalAlpha = 0.22 + rand() * 0.2;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(S * 0.3, y + (rand() - 0.5) * 6, S * 0.7, y + (rand() - 0.5) * 6, S, y + (rand() - 0.5) * 3); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = shade(c, -0.26); ctx.fillRect(0, y0, S, 1.6);
+      ctx.fillStyle = shade(c, 0.07); ctx.fillRect(0, y0 + 1.6, S, 1);
+      for (let j = 0; j < 2; j++) { ctx.fillStyle = shade(c, -0.2); ctx.fillRect(rand() * S, y0, 1.3, bh); }
+    }
+    blotches(ctx, S, shade(c, -0.1), rand, 46, 70, 0.12);
+    blotches(ctx, S, shade(c, 0.08), rand, 30, 50, 0.1);
+    for (let x = S / 8; x < S; x += S / 4) for (let y = S / 4; y < S; y += S / 2) {
+      ctx.fillStyle = shade(c, 0.1); ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill();
+      ctx.fillStyle = shade(c, -0.45); ctx.beginPath(); ctx.arc(x, y, 3, 0, 7); ctx.fill();
+    }
+    noise(ctx, S, 0.05, rand);
+    return 2.4;
+  },
+  panel(ctx, S, c, rand) { // large-format rainscreen panels (1.2 × 2.4 m), open joints, corner fixings
+    const cols = 2, pw = S / cols;
+    for (let i = 0; i < cols; i++) {
+      const tone = (rand() - 0.5) * 0.06;
+      const g = ctx.createLinearGradient(0, 0, 0, S);
+      g.addColorStop(0, shade(c, tone + 0.04)); g.addColorStop(1, shade(c, tone - 0.04));
+      ctx.fillStyle = g; ctx.fillRect(i * pw, 0, pw, S);
+    }
+    noise(ctx, S, 0.018, rand);
+    ctx.fillStyle = shade(c, -0.6);
+    for (let i = 0; i <= cols; i++) ctx.fillRect(i * pw - 2.5, 0, 5, S);
+    ctx.fillRect(0, 0, S, 3); ctx.fillRect(0, S - 3, S, 3);
+    ctx.fillStyle = shade(c, 0.18);
+    for (let i = 0; i < cols; i++) for (const fx of [0.12, 0.88]) for (const fy of [0.05, 0.5, 0.95]) { ctx.beginPath(); ctx.arc(i * pw + pw * fx, S * fy, 2.2, 0, 7); ctx.fill(); }
+    return 2.4;
+  },
+  battens(ctx, S, c, rand) { // vertical timber battens over a dark shadow gap
+    ctx.fillStyle = shade(c, -0.74); ctx.fillRect(0, 0, S, S);
+    const n = 10, bw = S / n;
+    for (let i = 0; i < n; i++) {
+      const x = i * bw + bw * 0.16, w = bw * 0.68;
+      ctx.fillStyle = shade(c, (rand() - 0.5) * 0.2); ctx.fillRect(x, 0, w, S);
+      ctx.globalAlpha = 0.3; ctx.lineWidth = 1;
+      for (let k = 0; k < 6; k++) { ctx.strokeStyle = shade(c, -0.2 - rand() * 0.15); const gx = x + rand() * w; ctx.beginPath(); ctx.moveTo(gx, 0); ctx.bezierCurveTo(gx + 2, S * 0.35, gx - 2, S * 0.65, gx + 1, S); ctx.stroke(); }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = shade(c, 0.12); ctx.fillRect(x, 0, 1.5, S);
+      ctx.fillStyle = shade(c, -0.3); ctx.fillRect(x + w - 2, 0, 2, S);
+    }
+    noise(ctx, S, 0.03, rand);
+    return 1.0;
+  },
+  wideoak(ctx, S, c, rand) { planks(ctx, S, c, rand, 6, 0, false, { long: true, vari: 0.13 }); return 2.4; },
+  porcelain(ctx, S, c, rand) { // large-format 60 × 120 cm tiles with faint veining
+    ctx.fillStyle = shade(c, -0.18); ctx.fillRect(0, 0, S, S);
+    const cols = 2, tw = S / cols;
+    for (let i = 0; i < cols; i++) { ctx.fillStyle = shade(c, (rand() - 0.5) * 0.05); ctx.fillRect(i * tw + 1.5, 1.5, tw - 3, S - 3); }
+    ctx.lineWidth = 1;
+    for (let k = 0; k < 14; k++) {
+      ctx.strokeStyle = shade(c, rand() > 0.5 ? -0.12 : 0.14); ctx.globalAlpha = 0.18 + rand() * 0.15;
+      const x = rand() * S, y = rand() * S;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.bezierCurveTo(x + (rand() - 0.5) * S * 0.6, y + rand() * S * 0.3, x + (rand() - 0.5) * S * 0.6, y + rand() * S * 0.6, x + (rand() - 0.5) * S * 0.4, y + S * 0.7); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    noise(ctx, S, 0.015, rand);
+    return 1.2;
+  },
   oak(ctx, S, c, rand) { return planks(ctx, S, c, rand, 7, 0.16); },
   teak(ctx, S, c, rand) { return planks(ctx, S, c, rand, 6, 0.22); },
   deck(ctx, S, c, rand) { return planks(ctx, S, c, rand, 9, 0.2, true); },
@@ -218,13 +289,13 @@ const PAINTERS = {
   },
 };
 
-function planks(ctx, S, c, rand, n, _w, deck = false) {
+function planks(ctx, S, c, rand, n, _w, deck = false, { long = false, vari = 0.22 } = {}) {
   const ph = S / n;
   for (let i = 0; i < n; i++) {
     let x = -rand() * S * 0.5;
     while (x < S) {
-      const L = S * (0.45 + rand() * 0.6);
-      ctx.fillStyle = shade(c, (rand() - 0.5) * 0.22);
+      const L = S * (long ? 0.9 + rand() * 0.8 : 0.45 + rand() * 0.6);
+      ctx.fillStyle = shade(c, (rand() - 0.5) * vari);
       ctx.fillRect(x, i * ph, L, ph);
       ctx.globalAlpha = 0.18;
       for (let k = 0; k < 5; k++) { ctx.strokeStyle = shade(c, -0.3); ctx.lineWidth = 1; const y = i * ph + rand() * ph; ctx.beginPath(); ctx.moveTo(x, y); ctx.bezierCurveTo(x + L * 0.3, y + 2, x + L * 0.6, y - 2, x + L, y + 1); ctx.stroke(); }
@@ -286,6 +357,20 @@ export function leafTex(kind) {
         ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + L * 0.5, y - L); ctx.moveTo(x, y); ctx.lineTo(x + L * 0.5, y + L * 0.9); ctx.stroke();
       }
       ctx.strokeStyle = '#4A3A2A'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo((x0 + x1) / 2, y0 + sag * 0.2, x1, y0 + sag); ctx.stroke();
+    }
+  } else if (kind === 'ograss') {
+    // ornamental grass: arching blades from one clump, feathery seed heads
+    for (let i = 0; i < 70; i++) {
+      const x0 = S / 2 + (rand() - 0.5) * S * 0.18, ang = (rand() - 0.5) * 1.5, len = S * (0.55 + rand() * 0.38);
+      const x1 = x0 + Math.sin(ang) * len, y1 = S - Math.cos(ang) * len * 0.95;
+      ctx.strokeStyle = shade(['#8E9A5C', '#A7A56B', '#7D8C52', '#B9AE7A'][Math.floor(rand() * 4)], (rand() - 0.5) * 0.25);
+      ctx.lineWidth = 1.6 + rand() * 1.6; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x0, S); ctx.quadraticCurveTo(x0 + Math.sin(ang) * len * 0.3, S - len * 0.7, x1, y1); ctx.stroke();
+      if (rand() < 0.35) {
+        ctx.fillStyle = shade('#D8CDA8', (rand() - 0.5) * 0.2); ctx.globalAlpha = 0.85;
+        ctx.save(); ctx.translate(x1, y1); ctx.rotate(ang); ctx.beginPath(); ctx.ellipse(0, 6, 3, 13, 0, 0, 7); ctx.fill(); ctx.restore();
+        ctx.globalAlpha = 1;
+      }
     }
   } else if (kind === 'frond') {
     const cx = S / 2;

@@ -68,8 +68,10 @@ const METRIC_DESC = {
   site: 'The house fits your setbacks and leaves a generous garden.',
   economy: 'A compact shape and stacked bathrooms keep build cost down.',
 };
-const FACADE = { boards: 'Timber cladding', siding: 'Painted lap siding', brick: 'Brick', stucco: 'Lime stucco', render: 'Smooth render', stone: 'Stone' };
-const ROOFNAME = { flat: 'Flat roof with parapet', gable: 'Pitched gable roof', hip: 'Hipped roof', shed: 'Mono-pitch roof' };
+const FACADE = { boards: 'Timber cladding', siding: 'Painted lap siding', brick: 'Brick', stucco: 'Lime stucco', render: 'Smooth render', stone: 'Stone', boardform: 'Board-formed concrete', panel: 'Large-format panel' };
+const ROOFNAME = { flat: 'Flat roof with parapet', float: 'Floating flat roof with timber soffit', gable: 'Pitched gable roof', hip: 'Hipped roof', shed: 'Mono-pitch roof' };
+const FLOORNAME = { oak: 'Oak boards', wideoak: 'Wide-plank oak', teak: 'Teak boards', concrete: 'Polished concrete', terracotta: 'Terracotta tiles' };
+const WETNAME = { stone: 'Natural stone', porcelain: 'Large-format porcelain', tile: 'Porcelain tile' };
 
 // ── state ───────────────────────────────────────────────────
 const saved = store.get('parametra.brief', null);
@@ -93,8 +95,42 @@ function titleblock(cells, cls = '') {
 }
 
 /** Front elevation sketch of a style, drawn from its tokens. */
+/** Front elevation for the contemporary style: floating roof plate, cantilevered panel volume, framed ribbons, fins. */
+function elevationContemporary(s) {
+  const W = 200, G = 128, x0 = 38, x1 = 162, bw = x1 - x0, sh = 33, top = G - sh * 2;
+  const o = [`<svg viewBox="12 4 176 142" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">`];
+  const R = (x, y, w, h, f, extra = '') => o.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${f}" ${extra}/>`);
+  const line = (d, c, wdt = 0.8, op = 0.35) => o.push(`<path d="${d}" stroke="${c}" stroke-width="${wdt}" opacity="${op}" fill="none"/>`);
+  const glass = s.glass || '#CFE0E6', bronze = s.windowBox, timber = s.door;
+  // board-formed concrete base
+  R(x0, top + sh, bw, sh, s.ext.color);
+  let d = ''; for (let y = top + sh + 4; y < G; y += 4) d += `M${x0} ${y}H${x1}`; line(d, '#000', 0.5, 0.14);
+  // dark panel volume, cantilevered past the base
+  R(x0 - 8, top, bw + 8, sh, s.accent.color);
+  d = ''; for (let x = x0 + 7; x < x1; x += 15) d += `M${x} ${top}V${top + sh}`; line(d, '#fff', 0.5, 0.18);
+  // shadow gap + floating roof plate with timber soffit
+  R(x0, top - 3, bw, 3, '#1d1e20');
+  R(x0 - 18, top - 9, bw + 32, 5, s.frame);
+  R(x0 - 18, top - 4.6, bw + 32, 1.4, s.soffit.color);
+  // ribbon windows in bronze picture frames
+  for (const x of [x0 + 4, x1 - 50]) { R(x - 2.5, top + 8.5, 47, 14, bronze); R(x, top + 11, 42, 9, glass, `stroke="${s.frame}" stroke-width=".6"`); }
+  // full-height living glass, slim frames
+  R(x0 + 6, top + sh + 3, 50, sh - 3, glass, `stroke="${s.frame}" stroke-width=".8"`); line(`M${x0 + 31} ${top + sh + 3}V${G}`, s.frame, 0.6, 0.9);
+  // timber pivot door with bar pull, fins over a slot window
+  R(100, G - 28, 14, 28, timber); d = ''; for (let x = 102; x < 114; x += 2) d += `M${x} ${G - 28}V${G}`; line(d, '#000', 0.4, 0.3);
+  line(`M111 ${G - 21}V${G - 7}`, s.frame, 1.2, 1);
+  R(x1 - 26, top + sh + 3, 9, sh - 3, glass);
+  d = ''; for (let x = x1 - 28; x <= x1 - 15; x += 2.2) d += `M${x} ${top + sh + 1}V${G}`; line(d, timber, 1.1, 1);
+  R(0, G, W, 22, 'var(--sunken)');
+  o.push(`<line x1="0" y1="${G}" x2="${W}" y2="${G}" stroke="var(--line-strong)"/>`);
+  for (const [x, r] of [[22, 9], [31, 6], [176, 8]]) o.push(`<circle cx="${x}" cy="${G - r + 2}" r="${r}" fill="#7E9A6C"/>`);
+  o.push('</svg>');
+  return o.join('');
+}
+
 function elevation(key) {
   const s = STYLES[key];
+  if (s.windows === 'contemporary') return elevationContemporary(s);
   const W = 200, G = 128, x0 = 38, x1 = 162, bw = x1 - x0, sh = 33, top = G - sh * 2;
   const o = [`<svg viewBox="12 4 176 142" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">`];
   const R = (x, y, w, h, f, extra = '') => o.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${f}" ${extra}/>`);
@@ -600,7 +636,7 @@ function renderTabs() {
   const d = state.design, M = d.metrics, st = d.style;
   let html = '';
   if (state.tab === 'overview') {
-    const cells = [['Floor area', `${M.gross} m²`], ['Living area', `${M.net} m²`], ['Footprint', `${M.footprint} m²`], ['Envelope', `${d.W.toFixed(1)} × ${d.D.toFixed(1)} m`], ['Height', `${(d.nFloors * d.H + (st.roof === 'flat' ? 0.5 : 2)).toFixed(1)} m`], ['Garden', `${Math.round(M.gardenRatio * 100)}% of plot`]];
+    const cells = [['Floor area', `${M.gross} m²`], ['Living area', `${M.net} m²`], ['Footprint', `${M.footprint} m²`], ['Envelope', `${d.W.toFixed(1)} × ${d.D.toFixed(1)} m`], ['Height', `${(d.nFloors * d.H + (st.roof === 'flat' ? 0.5 : st.roof === 'float' ? 0.4 : 2)).toFixed(1)} m`], ['Garden', `${Math.round(M.gardenRatio * 100)}% of plot`]];
     if (M.garage) cells.push(['Garage', `${M.garage} m²`]);
     if (M.terrace) cells.push(['Terraces', `${M.terrace} m²`]);
     html = `
@@ -635,9 +671,10 @@ function renderTabs() {
       <div class="spec">
         <div><span>Roof</span><b>${ROOFNAME[st.roof]}${st.pitch ? `, ${st.pitch}°` : ''}</b></div>
         <div><span>Facade</span><b>${FACADE[st.ext.tex] || st.ext.tex}, with ${(FACADE[st.accent.tex] || st.accent.tex).toLowerCase()} accents</b></div>
-        <div><span>Windows</span><b>${Math.round(st.glazing * 100)}% glazing${st.fullHeight ? ', floor to ceiling in living rooms' : ''}</b></div>
-        <div><span>Floors</span><b>${st.floor.tex === 'oak' ? 'Oak boards' : st.floor.tex === 'teak' ? 'Teak boards' : st.floor.tex === 'concrete' ? 'Polished concrete' : 'Terracotta tiles'}</b></div>
-        <div><span>Bathrooms</span><b>${st.wetFloor.tex === 'stone' ? 'Natural stone' : 'Porcelain tile'}</b></div>
+        <div><span>Windows</span><b>${Math.round(st.glazing * 100)}% glazing${st.fullHeight ? ', floor to ceiling in living rooms' : ''}${st.windows === 'contemporary' ? ', ribbon windows in bedrooms, slots at the stair and entry' : ''}</b></div>
+        ${st.details ? `<div><span>Details</span><b>${st.details}</b></div>` : ''}
+        <div><span>Floors</span><b>${FLOORNAME[st.floor.tex] || 'Terracotta tiles'}</b></div>
+        <div><span>Bathrooms</span><b>${WETNAME[st.wetFloor.tex] || 'Porcelain tile'}</b></div>
         <div><span>Ceiling height</span><b>${d.ceiling.toFixed(2)} m</b></div>
       </div>`;
   }

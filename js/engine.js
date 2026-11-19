@@ -669,6 +669,13 @@ function windowSpecs(r, L, side, style, b, head, d) {
   const t = r.type;
   const street = side === 'S';
   if (['garage', 'pantry', 'linen', 'storage'].includes(t)) return [];
+  if (style.windows === 'contemporary') {
+    // window types: full-height slots at stair and entry, a splashback strip in the kitchen, ribbons in bedrooms
+    if (t === 'stair') return L > 1.4 ? [{ w: 0.7, sill: 0.1, head }] : [];
+    if (t === 'foyer') return L > 2.4 ? [{ w: 0.55, sill: 0.1, head }] : [];
+    if (t === 'kitchen') return [{ w: clamp(L * 0.6, 1.2, L - 0.7), sill: 0.95, head: Math.min(1.42, head) }];
+    if (['bedroom', 'guest'].includes(t)) return [{ w: clamp(L * 0.75, 1.6, L - 0.7), sill: 1.15, head }];
+  }
   if (t === 'stair') return L > 1.4 ? [{ w: 1.0, sill: 0.35, head }] : [];
   if (t === 'hall') return L <= CORR + 0.4 ? [{ w: 0.9, sill: 0.1, head }] : [];
   if (t === 'foyer') return L > 2.4 ? [{ w: 0.6, sill: 0.1, head: Math.min(2.4, head) }] : [];

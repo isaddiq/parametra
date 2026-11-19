@@ -181,9 +181,10 @@ export const GARDEN_SPECIES = {
   zen: ['maple', 'pine', 'maple'],
   olive: ['olive', 'cypress', 'olive'],
   tropical: ['palm', 'palm', 'broadleaf'],
+  architectural: ['birch', 'maple', 'birch'],
 };
-export const STREET_SPECIES = { minimal: 'oak', meadow: 'birch', zen: 'maple', olive: 'olive', tropical: 'palm' };
-export const SHRUB_KIND = { minimal: 'shrub', meadow: 'shrub', zen: 'shrub', olive: 'lavender', tropical: 'tropic' };
+export const STREET_SPECIES = { minimal: 'oak', meadow: 'birch', zen: 'maple', olive: 'olive', tropical: 'palm', architectural: 'birch' };
+export const SHRUB_KIND = { minimal: 'shrub', meadow: 'shrub', zen: 'shrub', olive: 'lavender', tropical: 'tropic', architectural: 'ograss' };
 
 function barkMat(sp) {
   const S = SPECIES[sp];
@@ -351,7 +352,8 @@ export function hedge(group, foliage, x0, z0, x1, z1, h, w, rand) {
 
 // ── boundaries ──────────────────────────────────────────────
 const BOUNDARY = {
-  modern:        { front: { type: 'wall', h: 1.0, mat: ['render', '#E6E4DE'], cap: '#C9C5BC' }, side: { type: 'slatwall', h: 1.8, mat: ['render', '#E6E4DE'], cap: '#C9C5BC', wood: '#8A6340' } },
+  contemporary:  { front: { type: 'slatwall', h: 1.5, mat: ['boardform', '#AEAAA2'], cap: '#2E3033', wood: '#8B6646' }, side: { type: 'fence', h: 1.8, wood: '#2F3134' } },
+  modern:       { front: { type: 'wall', h: 1.0, mat: ['render', '#E6E4DE'], cap: '#C9C5BC' }, side: { type: 'slatwall', h: 1.8, mat: ['render', '#E6E4DE'], cap: '#C9C5BC', wood: '#8A6340' } },
   scandi:        { front: { type: 'fence', h: 1.1, wood: '#34373A' }, side: { type: 'fence', h: 1.8, wood: '#3B3E40' } },
   japandi:       { front: { type: 'slatwall', h: 1.4, mat: ['render', '#3E3D3A'], cap: '#2E2D2B', wood: '#9A7550' }, side: { type: 'fence', h: 1.8, wood: '#8E6A48' } },
   mediterranean: { front: { type: 'wall', h: 1.2, mat: ['stucco', '#EDE1CA'], cap: '#B65A37' }, side: { type: 'wall', h: 1.9, mat: ['stucco', '#EDE1CA'], cap: '#B65A37' }, hedge: true },
