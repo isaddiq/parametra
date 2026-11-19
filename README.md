@@ -1,5 +1,9 @@
 # Parametra
 
+![1795064799816](image/README/1795064799816.png)
+
+![1795064817121](image/README/1795064817121.png)
+
 House designs shaped around how you live. Describe a plot, a household and a style, and Parametra lays out dozens of complete house designs, scores each one against your priorities, and lets you explore the best four as dimensioned floor plans and as a furnished 3D model.
 
 It is a fully static site: plain HTML, CSS and ES modules. There is no build step, no backend and no runtime CDN for code (Three.js is vendored). It works on GitHub Pages or any static host.
@@ -8,8 +12,8 @@ It is a fully static site: plain HTML, CSS and ES modules. There is no build ste
 
 ES modules must be served over http. Opening `index.html` straight from disk won't work.
 
-- **Windows:** double-click `start.bat`. It opens <http://localhost:8080>.
-- **Any OS:** run `python -m http.server 8080` in this folder, then open <http://localhost:8080>.
+- **Windows:** double-click `start.bat`. It opens [http://localhost:8080](http://localhost:8080).
+- **Any OS:** run `python -m http.server 8080` in this folder, then open [http://localhost:8080](http://localhost:8080).
 
 ## Deploy to GitHub Pages
 
@@ -21,10 +25,10 @@ The only external request is Google Fonts (Archivo). If the fonts are blocked, t
 
 ## How it's organised
 
-| View | What it does |
-| --- | --- |
-| **Landing** (`#/`) | Live 3D turntable of a sample design, how it works, the seven styles drawn as elevations, a real plan output, and six example briefs |
-| **Brief** (`#/brief`) | Six guided steps: plot, size, rooms, kitchen and outdoors, style, priorities. A live preview of the best layout updates as you choose |
+| View                            | What it does                                                                                                                                                                                 |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Landing** (`#/`)      | Live 3D turntable of a sample design, how it works, the seven styles drawn as elevations, a real plan output, and six example briefs                                                         |
+| **Brief** (`#/brief`)   | Six guided steps: plot, size, rooms, kitchen and outdoors, style, priorities. A live preview of the best layout updates as you choose                                                        |
 | **Studio** (`#/studio`) | Four recommended designs as tabs. A single viewer switches between 3D, floor plan and side by side. A details panel has Overview, Rooms, Scores and Materials tabs. Export lives in one menu |
 
 **3D viewer modes:**
