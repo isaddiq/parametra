@@ -6,9 +6,8 @@
 //    #/studio  compare designs, plan + 3D, details
 // ─────────────────────────────────────────────────────────────
 import { DEFAULT_BRIEF, STYLES, METRIC_INFO, ROOM_TYPES } from './data.js';
-import { recommend, compass } from './engine.js';
+import { recommend, compass, scoreWeights } from './engine.js';
 import { renderPlan, renderThumb, PLAN_STYLE } from './plan2d.js';
-import { exportIFC } from './ifc.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -629,7 +628,7 @@ function renderTabs() {
         .map((x) => `<tr class="r ${state.sel?.id === x.id ? 'on' : ''}" data-room="${x.id}" tabindex="0"><td><span class="zd" style="background:${zone(x)}"></span>${x.label}</td><td class="n">${x.w.toFixed(1)} × ${x.h.toFixed(1)}</td><td class="n">${(x.w * x.h).toFixed(1)} m²</td></tr>`).join('')).join('');
     html = `${card}<div><h3>Room schedule</h3><table class="sched"><tbody>${rows}</tbody></table></div>`;
   } else if (state.tab === 'scores') {
-    html = `${radar(M)}<div class="bars">${Object.keys(METRIC_INFO).map((k) => `<div class="bar"><div class="br-top"><span>${METRIC_INFO[k].label}</span><b>${M[k]}</b></div><span class="tr"><i class="${M[k] < 55 ? 'lo' : ''}" style="width:${M[k]}%"></i></span><p>${METRIC_DESC[k]}</p></div>`).join('')}</div>`;
+    html = scoresTab(d);
   } else {
     html = `
       <div class="swatches">${[['Facade', st.ext.color], ['Accent', st.accent.color], ['Roof', st.roofMat.color], ['Frames', st.frame]].map(([n, c]) => `<div><i style="background:${c}"></i>${n}</div>`).join('')}</div>
@@ -643,6 +642,7 @@ function renderTabs() {
       </div>`;
   }
   $('#tabBody').innerHTML = html;
+  bindScoreHover();
   $('#rcClose')?.addEventListener('click', () => selectRoom(null));
   $('#rcFocus')?.addEventListener('click', () => {
     const r = state.sel; if (!viewer || !r) return;
@@ -650,16 +650,63 @@ function renderTabs() {
     set3DMode('section'); state.level3d = r.floor; viewer.setLevel(r.floor); renderViewerBar(); viewer.focusRoom(r);
   });
 }
+const LOW_SCORE = 55;
+/** Scores tab: radar profile + strongest/weakest summary, then one meter per criterion with its share of the match. */
+function scoresTab(d) {
+  const M = d.metrics, keys = Object.keys(METRIC_INFO);
+  const W = scoreWeights(d.brief.pri), wSum = keys.reduce((s, k) => s + W[k], 0);
+  const ranked = [...keys].sort((a, b) => M[b] - M[a]);
+  const top = ranked.filter((k) => M[k] >= 85).slice(0, 3);
+  const low = ranked.filter((k) => M[k] < 70).reverse().slice(0, 2);
+  const names = (list) => list.map((k) => METRIC_INFO[k].short).join(', ');
+  const meters = keys.map((k) => {
+    const lo = M[k] < LOW_SCORE;
+    return `<li class="meter${lo ? ' lo' : ''}" data-k="${k}">
+      <div class="m-top"><span class="m-name">${METRIC_INFO[k].label}</span><span class="m-w">${Math.round((W[k] / wSum) * 100)}% of match</span>
+        <b class="m-v">${lo ? `${ic('warn')}<span class="sr">Low score: </span>` : ''}${M[k]}</b></div>
+      <span class="tr" aria-hidden="true"><i style="width:${M[k]}%"></i></span>
+      <p>${METRIC_DESC[k]}</p></li>`;
+  }).join('');
+  return `
+    <div class="score-sum">
+      <div class="radar-wrap">${radar(M)}</div>
+      <dl class="score-key">
+        <div><dt>Strongest</dt><dd>${top.length ? names(top) : names(ranked.slice(0, 2))}</dd></div>
+        <div><dt>Weakest</dt><dd>${low.length ? names(low) : 'Nothing below 70'}</dd></div>
+      </dl>
+    </div>
+    <div>
+      <h3>How the match is scored</h3>
+      <p class="sub">Each criterion is scored out of 100. Your priorities set how much each one counts towards the overall ${M.score}.</p>
+      <ul class="meters">${meters}</ul>
+    </div>`;
+}
 function radar(M) {
   const keys = Object.keys(METRIC_INFO);
-  const cx = 150, cy = 118, R = 80;
+  const cx = 170, cy = 128, R = 86;
   const pt = (i, v) => { const a = (i / keys.length) * Math.PI * 2 - Math.PI / 2; return [cx + Math.cos(a) * R * v, cy + Math.sin(a) * R * v]; };
-  let s = `<svg class="radar" viewBox="0 0 300 236" role="img" aria-label="Score profile across nine criteria">`;
-  for (const g of [0.25, 0.5, 0.75, 1]) s += `<polygon class="rg" points="${keys.map((_, i) => pt(i, g).join(',')).join(' ')}"/>`;
-  keys.forEach((k, i) => { const [x, y] = pt(i, 1); s += `<line class="ax" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}"/>`; const [lx, ly] = pt(i, 1.2); s += `<text x="${lx}" y="${ly + 4}" text-anchor="${lx < cx - 5 ? 'end' : lx > cx + 5 ? 'start' : 'middle'}">${METRIC_INFO[k].short}</text>`; });
-  s += `<polygon class="area" points="${keys.map((k, i) => pt(i, M[k] / 100).join(',')).join(' ')}"/>`;
-  keys.forEach((k, i) => { const [x, y] = pt(i, M[k] / 100); s += `<circle class="pt" cx="${x}" cy="${y}" r="3"><title>${METRIC_INFO[k].label}: ${M[k]}</title></circle>`; });
+  const f = (n) => n.toFixed(1);
+  let s = `<svg class="radar" viewBox="0 0 340 256" role="img" aria-label="Score profile: ${keys.map((k) => `${METRIC_INFO[k].label} ${M[k]}`).join(', ')}">`;
+  for (const g of [0.25, 0.5, 0.75, 1]) s += `<polygon class="rg${g === 1 ? ' out' : ''}" points="${keys.map((_, i) => pt(i, g).map(f).join(',')).join(' ')}"/>`;
+  keys.forEach((k, i) => {
+    const [x, y] = pt(i, 1); s += `<line class="ax" x1="${cx}" y1="${cy}" x2="${f(x)}" y2="${f(y)}"/>`;
+    const [lx, ly] = pt(i, 1.17);
+    s += `<text data-k="${k}" x="${f(lx)}" y="${f(ly + 4)}" text-anchor="${lx < cx - 5 ? 'end' : lx > cx + 5 ? 'start' : 'middle'}">${METRIC_INFO[k].short}</text>`;
+  });
+  s += `<polygon class="area" points="${keys.map((k, i) => pt(i, M[k] / 100).map(f).join(',')).join(' ')}"/>`;
+  keys.forEach((k, i) => {
+    const [x, y] = pt(i, M[k] / 100);
+    s += `<g class="pt-g" data-k="${k}"><circle class="hit" cx="${f(x)}" cy="${f(y)}" r="11"/><circle class="pt" cx="${f(x)}" cy="${f(y)}" r="4"/><title>${METRIC_INFO[k].label}: ${M[k]}</title></g>`;
+  });
   return s + '</svg>';
+}
+/** Linked hover between radar points and their meter rows. */
+function bindScoreHover() {
+  const body = $('#tabBody');
+  if (!body.querySelector('.meters')) return;
+  const set = (k) => body.querySelectorAll('[data-k]').forEach((el) => el.classList.toggle('hot', el.dataset.k === k));
+  body.onpointerover = (e) => { const el = e.target.closest('[data-k]'); set(el ? el.dataset.k : null); };
+  body.onpointerleave = () => set(null);
 }
 
 function setView(v) {
@@ -822,7 +869,14 @@ async function doExport(kind) {
   const d = state.design; if (!d) return;
   const base = `parametra-${d.name.toLowerCase()}-${d.letter.toLowerCase()}`;
   try {
-    if (kind === 'ifc') { download(new Blob([exportIFC(d)], { type: 'application/x-step' }), `${base}.ifc`); toast('BIM model exported'); }
+    if (kind === 'ifc') {
+      if (!viewer) return toast('The 3D view is not available, so the BIM model cannot be exported');
+      if (viewer.design !== d) viewer.setDesign(d);
+      toast('Preparing the BIM model');
+      await new Promise((r) => setTimeout(r, 30)); // let the toast paint before the export blocks
+      download(new Blob([viewer.exportIFC()], { type: 'application/x-step' }), `${base}.ifc`);
+      toast('BIM model exported');
+    }
     if (kind === 'glb') { if (!viewer) return toast('The 3D view is not available, so the 3D model cannot be exported'); toast('Preparing the 3D model'); download(await viewer.exportGLB(), `${base}.glb`); toast('3D model exported'); }
     if (kind === 'png') { if (!viewer) return toast('The 3D view is not available'); download(viewer.screenshot(), `${base}.png`); toast('Image exported'); }
     if (kind === 'svg') {

@@ -38,7 +38,7 @@ function texturedBox(group, mat, cx, cy, cz, sx, sy, sz, cast = true) {
 
 /** Instanced unit boxes (posts, slats, pickets, rails). */
 class Boxes {
-  constructor(mat) { this.mat = mat; this.a = []; }
+  constructor(mat, ifc = null) { this.mat = mat; this.ifc = ifc; this.a = []; }
   add(cx, cy, cz, sx, sy, sz) { this.a.push([cx, cy, cz, sx, sy, sz]); }
   build(group) {
     if (!this.a.length) return;
@@ -46,13 +46,16 @@ class Boxes {
     const M = new THREE.Matrix4();
     this.a.forEach((b, i) => { M.makeScale(b[3], b[4], b[5]); M.setPosition(b[0], b[1], b[2]); m.setMatrixAt(i, M); });
     m.castShadow = true; m.receiveShadow = true; group.add(m);
+    if (this.ifc) m.userData.ifc = this.ifc;
   }
 }
+/** IFC tag for a planted element (trees, shrubs, hedges, rocks). */
+const plantTag = (kind, name) => ({ cls: 'IfcGeographicElement', type: 'USERDEFINED', objectType: kind, name });
 
 // ── lawn ────────────────────────────────────────────────────
 export function grassMaterial(color) {
   return cached(`lawn|${color}`, () => {
-    const m = new THREE.MeshStandardMaterial({ map: tex('grass', color), roughness: 0.97 });
+    const m = new THREE.MeshStandardMaterial({ map: tex('grass', color), roughness: 0.97, name: 'Lawn' });
     m.onBeforeCompile = (sh) => {
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vGW;')
@@ -127,19 +130,23 @@ export function scatterGrass(group, bounds, free, count, rand) {
   mesh.count = n;
   mesh.receiveShadow = true;
   mesh.frustumCulled = false;
+  // Tens of thousands of blades: left out of the BIM model (the lawn surface carries the look)
+  mesh.userData.ifcSkip = true;
   group.add(mesh);
 }
 
 // ── foliage cards ───────────────────────────────────────────
 function leafMat(kind) {
   // emissive driven by the leaf texture fakes light passing through the canopy
-  return cached(`leaf|${kind}`, () => new THREE.MeshStandardMaterial({ map: leafTex(kind), emissiveMap: leafTex(kind), emissive: new THREE.Color(0.28, 0.3, 0.24), alphaTest: 0.35, alphaToCoverage: true, side: THREE.DoubleSide, roughness: 0.78 }));
+  return cached(`leaf|${kind}`, () => new THREE.MeshStandardMaterial({ map: leafTex(kind), emissiveMap: leafTex(kind), emissive: new THREE.Color(0.28, 0.3, 0.24), alphaTest: 0.35, alphaToCoverage: true, side: THREE.DoubleSide, roughness: 0.78, name: `Foliage - ${kind}` }));
 }
+const FOLIAGE_TAG = plantTag('Foliage', 'Foliage');
 export class Foliage {
-  constructor() { this.b = new Map(); }
+  /** `owner` is the IFC tag of the plant the next cards belong to. */
+  constructor() { this.b = new Map(); this.owner = null; }
   add(kind, x, y, z, size, rx, ry, rz, shade = 1) {
     if (!this.b.has(kind)) this.b.set(kind, []);
-    this.b.get(kind).push([x, y, z, size, rx, ry, rz, shade]);
+    this.b.get(kind).push([x, y, z, size, rx, ry, rz, shade, this.owner || FOLIAGE_TAG]);
   }
   build(group) {
     const M = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(0, 0, 0, 'YXZ'), p = new THREE.Vector3(), s = new THREE.Vector3(), c = new THREE.Color();
@@ -151,6 +158,7 @@ export class Foliage {
         c.setRGB(a[7], a[7], a[7] * 0.97); mesh.setColorAt(i, c);
       });
       mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.userData.instanceIfc = arr.map((a) => a[8]);
       group.add(mesh);
     }
   }
@@ -181,7 +189,7 @@ function barkMat(sp) {
   const S = SPECIES[sp];
   return cached(`bark|${sp}`, () => {
     const t = tex(S.bark[0], S.bark[1]).clone(); t.needsUpdate = true; t.repeat.set(S.palm ? 1 : 2, S.palm ? 10 : 3);
-    return new THREE.MeshStandardMaterial({ map: t, roughness: 0.95 });
+    return new THREE.MeshStandardMaterial({ map: t, roughness: 0.95, name: `Bark - ${sp}` });
   });
 }
 /** Merge non-indexed geometries into one (keeps tree limbs to one draw call). */
@@ -209,7 +217,11 @@ function limbGeo(p0, p1, r0, r1, seg = 7) {
 export function plantTree(sp, x, z, rand, group, foliage, scale = 1) {
   const S = SPECIES[sp] || SPECIES.oak;
   const H = lerp(S.h[0], S.h[1], rand()) * scale;
-  if (S.palm) return plantPalm(x, z, H, rand, group);
+  const ifc = plantTag('Tree', `Tree - ${sp}`);
+  ifc.pset = { Parametra_Planting: { Species: sp, Height: { t: 'IfcPositiveLengthMeasure', v: H } } };
+  if (S.palm) return plantPalm(x, z, H, rand, group, ifc);
+  const prevOwner = foliage.owner;
+  foliage.owner = ifc;
   const limbs = [];
   const base = new THREE.Vector3(x, 0, z);
   if (S.conifer) {
@@ -254,7 +266,9 @@ export function plantTree(sp, x, z, rand, group, foliage, scale = 1) {
   }
   const mesh = new THREE.Mesh(mergeGeos(limbs), barkMat(sp));
   mesh.castShadow = true; mesh.receiveShadow = true;
+  mesh.userData.ifc = ifc;
   group.add(mesh);
+  foliage.owner = prevOwner;
   return mesh;
 }
 
@@ -276,12 +290,13 @@ function frondGeometry() {
   FROND = g;
   return g;
 }
-function plantPalm(x, z, H, rand, group) {
+function plantPalm(x, z, H, rand, group, ifc) {
   const lean = (rand() - 0.5) * 1.2, ang = rand() * Math.PI * 2;
   const pts = [];
   for (let i = 0; i <= 10; i++) { const t = i / 10; const off = Math.sin(t * 1.3) * lean; pts.push(new THREE.Vector3(x + Math.cos(ang) * off, t * H, z + Math.sin(ang) * off)); }
   const trunk = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.15, 8), barkMat('palm'));
   trunk.castShadow = true; trunk.receiveShadow = true; group.add(trunk);
+  trunk.userData.ifc = ifc;
   const top = pts[pts.length - 1];
   const mat = leafMat('frond');
   const n = 11 + Math.floor(rand() * 4);
@@ -291,20 +306,25 @@ function plantPalm(x, z, H, rand, group) {
     m.rotation.set(0, (i / n) * Math.PI * 2 + rand() * 0.4, (rand() - 0.3) * 0.5, 'YZX');
     const s = 0.8 + rand() * 0.35; m.scale.set(s, s, s);
     m.castShadow = true; m.receiveShadow = true; group.add(m);
+    m.userData.ifc = ifc;
   }
   const nut = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), colorMat('#5B4A2A'));
   nut.position.copy(top).add(new THREE.Vector3(0, -0.25, 0)); group.add(nut);
+  nut.userData.ifc = ifc;
 }
 
 export function plantShrub(x, z, r, rand, foliage, kind = 'shrub', h = null) {
   const hh = h ?? r * 1.15;
   const n = Math.round(16 + r * r * 42);
+  const prevOwner = foliage.owner;
+  foliage.owner = plantTag('Shrub', `Shrub - ${kind}`);
   for (let i = 0; i < n; i++) {
     let ux, uy, uz, l;
     do { ux = rand() * 2 - 1; uy = rand() * 2 - 1; uz = rand() * 2 - 1; l = ux * ux + uy * uy + uz * uz; } while (l > 1);
     const yy = (uy * 0.5 + 0.5);
     foliage.add(kind, x + ux * r, Math.max(0.12, yy * hh), z + uz * r, r * (0.55 + rand() * 0.45) + 0.18, (rand() - 0.5) * 1.6, rand() * Math.PI * 2, rand() * Math.PI, 0.55 + 0.45 * yy);
   }
+  foliage.owner = prevOwner;
 }
 
 /** Clipped hedge: textured box with leaf cards breaking up the silhouette. */
@@ -313,8 +333,11 @@ export function hedge(group, foliage, x0, z0, x1, z1, h, w, rand) {
   const len = alongX ? Math.abs(x1 - x0) : Math.abs(z1 - z0);
   if (len < 0.5) return;
   const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-  const mat = cached('hedge', () => new THREE.MeshStandardMaterial({ map: tex('hedge', '#5A7F42'), roughness: 0.95 }));
-  texturedBox(group, mat, cx, h / 2, cz, alongX ? len : w, h, alongX ? w : len);
+  const mat = cached('hedge', () => new THREE.MeshStandardMaterial({ map: tex('hedge', '#5A7F42'), roughness: 0.95, name: 'Hedge foliage' }));
+  const ifc = plantTag('Hedge', 'Hedge');
+  texturedBox(group, mat, cx, h / 2, cz, alongX ? len : w, h, alongX ? w : len).userData.ifc = ifc;
+  const prevOwner = foliage.owner;
+  foliage.owner = ifc;
   const n = Math.round(len * 9);
   for (let i = 0; i < n; i++) {
     const t = rand() - 0.5, face = rand();
@@ -323,6 +346,7 @@ export function hedge(group, foliage, x0, z0, x1, z1, h, w, rand) {
     else { const side = face < 0.7 ? -1 : 1; py = 0.3 + rand() * (h - 0.3); px = alongX ? cx + t * len : cx + side * w / 2; pz = alongX ? cz + side * w / 2 : cz + t * len; }
     foliage.add('shrub', px, py, pz, 0.32 + rand() * 0.18, (rand() - 0.5) * 2, rand() * 6.3, rand() * 3.1, 0.7 + rand() * 0.3);
   }
+  foliage.owner = prevOwner;
 }
 
 // ── boundaries ──────────────────────────────────────────────
@@ -344,7 +368,9 @@ export const boundarySpec = (key) => BOUNDARY[key] || BOUNDARY.modern;
 export function buildBoundary(group, styleKey, runs) {
   const spec = boundarySpec(styleKey);
   const posts = new Map();
-  const boxes = (key, mat) => { if (!posts.has(key)) posts.set(key, new Boxes(mat)); return posts.get(key); };
+  const boxes = (key, mat, ifc) => { if (!posts.has(key)) posts.set(key, new Boxes(mat, ifc)); return posts.get(key); };
+  const FENCE = { fence: 'Board fence', picket: 'Picket fence', postrail: 'Post-and-rail fence' };
+  const fenceTag = (type) => ({ cls: 'IfcRailing', type: 'USERDEFINED', objectType: 'Fence', name: FENCE[type] || 'Fence' });
   for (const run of runs) {
     const sp = run.kind === 'front' ? spec.front : spec.side;
     let segs = [[run.a, run.b]];
@@ -359,39 +385,40 @@ export function buildBoundary(group, styleKey, runs) {
         const wm = texMat(sp.mat[0], sp.mat[1]);
         const cm = colorMat(sp.cap, { roughness: 0.7 });
         const wh = sp.type === 'wall' ? sp.h : 0.55;
+        const ifc = { cls: 'IfcWall', type: 'STANDARD', name: run.kind === 'front' ? 'Front boundary wall' : 'Boundary wall', pset: { Pset_WallCommon: { IsExternal: true, LoadBearing: false } } };
         const wb = B(mid, wh / 2, 0, len, wh, 0.2);
-        texturedBox(group, wm, wb[0], wb[1], wb[2], wb[3], wb[4], wb[5]);
+        texturedBox(group, wm, wb[0], wb[1], wb[2], wb[3], wb[4], wb[5]).userData.ifc = ifc;
         const cap = B(mid, wh + 0.03, 0, len + 0.04, 0.06, 0.28);
-        texturedBox(group, cm, cap[0], cap[1], cap[2], cap[3], cap[4], cap[5]);
+        texturedBox(group, cm, cap[0], cap[1], cap[2], cap[3], cap[4], cap[5]).userData.ifc = ifc;
         const pierH = sp.h + 0.15;
         for (const t of pierAt) {
           const pb = B(t, pierH / 2, 0, 0.42, pierH, 0.42);
-          texturedBox(group, wm, pb[0], pb[1], pb[2], pb[3], pb[4], pb[5]);
+          texturedBox(group, wm, pb[0], pb[1], pb[2], pb[3], pb[4], pb[5]).userData.ifc = ifc;
           const pc = B(t, pierH + 0.035, 0, 0.5, 0.07, 0.5);
-          texturedBox(group, cm, pc[0], pc[1], pc[2], pc[3], pc[4], pc[5]);
+          texturedBox(group, cm, pc[0], pc[1], pc[2], pc[3], pc[4], pc[5]).userData.ifc = ifc;
         }
         if (sp.type === 'slatwall') {
-          const bat = boxes(`bat|${sp.wood}`, colorMat(sp.wood, { roughness: 0.7 }));
+          const bat = boxes(`bat|${sp.wood}`, colorMat(sp.wood, { roughness: 0.7 }), { cls: 'IfcRailing', type: 'USERDEFINED', objectType: 'Screen', name: 'Timber slat screen' });
           const sh = sp.h - wh - 0.06, y = wh + 0.06 + sh / 2;
           for (let t = s + 0.25; t < e - 0.2; t += 0.11) bat.add(...B(t, y, 0, 0.045, sh, 0.05));
           const rail = B(mid, sp.h - 0.02, 0, len, 0.04, 0.08);
           bat.add(...rail);
         }
       } else if (sp.type === 'fence') {
-        const wood = boxes(`wood|${sp.wood}`, colorMat(sp.wood, { roughness: 0.75 }));
+        const wood = boxes(`wood|${sp.wood}`, colorMat(sp.wood, { roughness: 0.75 }), fenceTag(sp.type));
         const n = Math.max(1, Math.round(len / 2.4));
         for (let i = 0; i <= n; i++) wood.add(...B(s + (len * i) / n, (sp.h + 0.08) / 2, 0, 0.09, sp.h + 0.08, 0.09));
         const rows = Math.floor((sp.h - 0.08) / 0.145);
         for (let r = 0; r < rows; r++) wood.add(...B(mid, 0.1 + r * 0.145 + 0.0625, run.inward * 0.06, len, 0.125, 0.022));
         wood.add(...B(mid, sp.h + 0.02, run.inward * 0.03, len + 0.05, 0.04, 0.14));
       } else if (sp.type === 'picket') {
-        const wood = boxes(`wood|${sp.wood}`, colorMat(sp.wood, { roughness: 0.6 }));
+        const wood = boxes(`wood|${sp.wood}`, colorMat(sp.wood, { roughness: 0.6 }), fenceTag(sp.type));
         const n = Math.max(1, Math.round(len / 2.4));
         for (let i = 0; i <= n; i++) wood.add(...B(s + (len * i) / n, (sp.h + 0.12) / 2, 0, 0.09, sp.h + 0.12, 0.09));
         for (const y of [0.25, sp.h - 0.2]) wood.add(...B(mid, y, run.inward * 0.06, len, 0.07, 0.03));
         for (let t = s + 0.12; t < e - 0.08; t += 0.15) wood.add(...B(t, (sp.h + 0.04) / 2, run.inward * 0.085, 0.07, sp.h - 0.04, 0.02));
       } else if (sp.type === 'postrail') {
-        const wood = boxes(`wood|${sp.wood}`, colorMat(sp.wood, { roughness: 0.7 }));
+        const wood = boxes(`wood|${sp.wood}`, colorMat(sp.wood, { roughness: 0.7 }), fenceTag(sp.type));
         const n = Math.max(1, Math.round(len / 2.6));
         for (let i = 0; i <= n; i++) wood.add(...B(s + (len * i) / n, sp.h / 2, 0, 0.12, sp.h, 0.12));
         for (const y of [0.35, 0.75, sp.h - 0.12]) wood.add(...B(mid, y, run.inward * 0.07, len, 0.13, 0.04));
@@ -410,5 +437,6 @@ export function rock(group, x, z, r, rand) {
   g.computeVertexNormals();
   const m = new THREE.Mesh(g, texMat('stone', '#8F8A82', { roughness: 1 }));
   m.position.set(x, r * 0.25, z); m.rotation.y = rand() * 6.3; m.castShadow = true; m.receiveShadow = true;
+  m.userData.ifc = plantTag('Rock', 'Garden rock');
   group.add(m);
 }

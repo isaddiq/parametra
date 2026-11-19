@@ -33,7 +33,7 @@ function S(g, r, m, x, y, z, detail = 1, sy = 1) {
 export function furnitureMaterials(style) {
   const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0, ...o });
   const fabricTex = (c) => { const t = tex('fabric', c).clone(); t.needsUpdate = true; t.repeat.set(2, 2); return t; };
-  return {
+  const M = {
     wood: std(style.wood, { roughness: 0.6 }),
     woodDark: std(new THREE.Color(style.wood).multiplyScalar(0.55), { roughness: 0.6 }),
     fabric: std(style.fabric, { map: fabricTex(style.fabric), roughness: 0.95 }),
@@ -61,9 +61,19 @@ export function furnitureMaterials(style) {
     cushion: std('#e8e2d6', { roughness: 1 }),
     concrete: std('#a8a59f', { roughness: 0.9 }),
   };
+  // readable names, carried into the IFC export as materials
+  const NAMES = {
+    wood: 'Furniture timber', woodDark: 'Furniture timber - dark', fabric: 'Upholstery', fabric2: 'Upholstery - accent', white: 'White lacquer',
+    ceramic: 'Sanitary ceramic', black: 'Black finish', screen: 'Screen glass', steel: 'Stainless steel', metal: 'Metal finish', glass: 'Shower glass',
+    mirror: 'Mirror', rug: 'Rug', plant: 'Plant foliage', plant2: 'Plant foliage - light', pot: 'Plant pot', counterTop: 'Worktop', cabinet: 'Cabinetry',
+    cabinet2: 'Cabinetry - accent', shade: 'Lamp shade', water: 'Bath water', outdoor: 'Outdoor timber', cushion: 'Cushions', concrete: 'Planter concrete',
+  };
+  for (const [k, v] of Object.entries(NAMES)) M[k].name = v;
+  M.book.forEach((m, i) => (m.name = `Book spines ${i + 1}`));
+  return M;
 }
 
-const carMat = (M, c) => (M.carMats[c] ||= new THREE.MeshStandardMaterial({ color: c, roughness: 0.25, metalness: 0.6 }));
+const carMat = (M, c) => (M.carMats[c] ||= new THREE.MeshStandardMaterial({ color: c, roughness: 0.25, metalness: 0.6, name: 'Car paint' }));
 
 export function buildFurniture(it, M, env = {}) {
   const g = new THREE.Group();

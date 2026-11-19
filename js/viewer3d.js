@@ -16,6 +16,12 @@ import { furnitureMaterials, buildFurniture } from './models3d.js';
 import { grassMaterial, scatterGrass, Foliage, plantTree, plantShrub, hedge, buildBoundary, rock, boxUV, GARDEN_SPECIES, STREET_SPECIES, SHRUB_KIND } from './landscape.js';
 import { CORR, STAIR_W, T_EXT, T_INT, SLAB, rectUnion, outerEdges, compass } from './engine.js';
 import { WET } from './data.js';
+import { furnitureTag, exportIFC as writeIFC } from './ifc.js';
+
+// Readable material names for BIM export (texture kind -> finish)
+const FINISH = { render: 'render', stucco: 'stucco', boards: 'timber cladding', siding: 'lap siding', brick: 'brick', stone: 'stone', seam: 'standing-seam metal', clay: 'clay tiles', shingle: 'shingles', membrane: 'membrane', oak: 'oak boards', teak: 'teak boards', tile: 'tiles', terracotta: 'terracotta tiles', concrete: 'concrete' };
+const finish = (k) => FINISH[k] || k;
+const ROOF_TYPE = { flat: 'FLAT_ROOF', gable: 'GABLE_ROOF', hip: 'HIP_ROOF', shed: 'SHED_ROOF' };
 
 export const PLINTH = 0.15;
 const DEG = Math.PI / 180;
@@ -220,6 +226,11 @@ export class Viewer3D {
     this.furnGroups = this.floorGroups.map((fg) => { const g = new THREE.Group(); g.name = 'Furniture'; fg.add(g); return g; });
     this.roofGroup = new THREE.Group(); this.roofGroup.name = 'Roof'; this.world.add(this.roofGroup);
     this.siteGroup = new THREE.Group(); this.siteGroup.name = 'Site'; this.world.add(this.siteGroup);
+    // IFC: the roof belongs to the top storey, landscape to the site
+    this.roofGroup.userData.level = this.F - 1;
+    this.siteGroup.userData.site = true;
+    this.roofTag = { cls: 'IfcRoof', type: ROOF_TYPE[d.style.roof] || 'NOTDEFINED', name: 'Roof' };
+    this.wallTags = d.floors.map(() => new Map());
 
     this.buildSlabs(d);
     d.floors.forEach((f, k) => {
@@ -252,6 +263,7 @@ export class Viewer3D {
     }
     this.world.traverse((o) => {
       if (o.isMesh && o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+      if (o.userData.ifcGeometry) o.userData.ifcGeometry.dispose();
       if (o.isCSS2DObject) o.element.remove();
     });
     this.world.clear();
@@ -286,6 +298,14 @@ export class Viewer3D {
       poolTile: std({ color: '#9fd4e2', roughness: 0.3, side: THREE.BackSide }),
       timber: std({ map: tex('boards', st.wood), roughness: 0.75 }),
     };
+    const names = {
+      ext: `Facade - ${finish(st.ext.tex)}`, accent: `Facade accent - ${finish(st.accent.tex)}`, int: 'Interior wall paint', wetWall: 'Wall tiles',
+      floor: `Flooring - ${finish(st.floor.tex)}`, wetFloor: `Wet area flooring - ${finish(st.wetFloor.tex)}`, garageFloor: 'Garage floor - concrete',
+      deck: 'Timber decking', paving: 'Paving', plinth: 'Plinth - concrete', ceiling: 'Ceiling paint', roofTop: 'Roof gravel',
+      roof: `Roofing - ${finish(st.roofMat.tex)}`, frame: 'Window and door frames', glass: 'Glazing', door: 'Entrance door', intDoor: 'Interior doors',
+      garageDoor: 'Garage door', rail: 'Glass balustrade', stair: `Stair treads - ${finish(st.floor.tex)}`, water: 'Pool water', poolTile: 'Pool tiles', timber: 'Timber',
+    };
+    for (const [k, v] of Object.entries(names)) M[k].name = v;
     // poché for clipped solids: back faces render as a dark fill
     M.roof.side = THREE.DoubleSide;
     for (const k of ['ext', 'accent', 'int', 'wetWall', 'ceiling', 'plinth', 'roofTop']) {
@@ -337,9 +357,16 @@ export class Viewer3D {
       const top = k === 0 ? PLINTH : this.elev(k);
       const th = k === 0 ? PLINTH : SLAB;
       const grp = k === 0 ? this.floorGroups[0] : k < this.F ? this.floorGroups[k] : this.floorGroups[this.F - 1];
+      const flat = d.style.roof === 'flat';
+      const area = rects.reduce((a, r) => a + r.w * r.h, 0);
+      const tag = k === 0 ? { cls: 'IfcSlab', type: 'BASESLAB', name: 'Ground slab' }
+        : k < this.F ? { cls: 'IfcSlab', type: 'FLOOR', name: `Floor slab - Level ${k}` }
+        : flat ? { cls: 'IfcSlab', type: 'ROOF', name: 'Roof slab', part: this.roofTag } : { cls: 'IfcSlab', type: 'FLOOR', name: 'Attic floor slab' };
+      tag.pset = { Pset_SlabCommon: { IsExternal: k === this.F && flat, LoadBearing: true } };
+      tag.qto = { Qto_SlabBaseQuantities: { Width: [th, 'len'], GrossArea: [area, 'area'], GrossVolume: [area * th, 'vol'] } };
       for (const r of rects) {
         const mats = k === 0 ? M.plinth : [M.int, M.int, M.roofTop, M.ceiling, M.int, M.int];
-        this.box(grp, r.w, th - 0.004, r.h, mats, this.wx(r.x + r.w / 2), top - th / 2 - 0.002, this.wz(r.y + r.h / 2), { ox: r.x, oz: r.y });
+        this.box(grp, r.w, th - 0.004, r.h, mats, this.wx(r.x + r.w / 2), top - th / 2 - 0.002, this.wz(r.y + r.h / 2), { ox: r.x, oz: r.y }).userData.ifc = tag;
       }
     }
   }
@@ -350,11 +377,13 @@ export class Viewer3D {
       if (r.type === 'stair' && k > 0) continue;
       const mat = r.type === 'terrace' ? M.deck : r.type === 'garage' ? M.garageFloor : WET.has(r.type) || (r.type === 'kitchen' && d_styleTile(this.design)) ? M.wetFloor : M.floor;
       const m = this.box(this.floorGroups[k], r.w, 0.02, r.h, mat, this.wx(r.x + r.w / 2), e0 + 0.01, this.wz(r.y + r.h / 2), { cast: false, ox: r.x, oz: r.y });
-      m.userData = { room: r, level: k };
+      const ifc = { cls: 'IfcCovering', type: 'FLOORING', name: r.type === 'terrace' ? 'Terrace decking' : `${r.label} - floor finish`, space: r.id, qto: { Qto_CoveringBaseQuantities: { Width: [0.02, 'len'], NetArea: [r.w * r.h, 'area'] } } };
+      m.userData = { room: r, level: k, ifc };
       this.pickables.push(m);
     }
     for (const bc of f.balconies) {
-      this.box(this.floorGroups[k], bc.w, 0.22, bc.h, [M.int, M.int, M.deck, M.ceiling, M.int, M.int], this.wx(bc.x + bc.w / 2), e0 - 0.09, this.wz(bc.y + bc.h / 2), { ox: bc.x, oz: bc.y });
+      const bm = this.box(this.floorGroups[k], bc.w, 0.22, bc.h, [M.int, M.int, M.deck, M.ceiling, M.int, M.int], this.wx(bc.x + bc.w / 2), e0 - 0.09, this.wz(bc.y + bc.h / 2), { ox: bc.x, oz: bc.y });
+      bm.userData.ifc = { cls: 'IfcSlab', type: 'FLOOR', name: 'Balcony slab', pset: { Pset_SlabCommon: { IsExternal: true } } };
     }
   }
 
@@ -378,6 +407,12 @@ export class Viewer3D {
       const h = ext ? this.H : this.design.ceiling;
       const matA = this.faceMat(w.a, w.b, f, k), matB = this.faceMat(w.b, w.a, f, k);
       const plain = this.mats.int;
+      const tag = {
+        cls: 'IfcWall', type: ext ? 'STANDARD' : 'PARTITIONING', name: ext ? 'Exterior wall' : 'Interior wall',
+        pset: { Pset_WallCommon: { IsExternal: ext, LoadBearing: ext } },
+        qto: { Qto_WallBaseQuantities: { Length: [w.e - w.s + (ext ? t : 0), 'len'], Height: [h, 'len'], Width: [t, 'len'] } },
+      };
+      this.wallTags[k].set(w, tag);
       const ops = f.openings.filter((o) => o.axis === w.axis && Math.abs(o.c - w.c) < 1e-3 && o.s < w.e - 1e-3 && o.e > w.s + 1e-3).sort((p, q) => p.s - q.s);
       const pieces = [];
       let cur = w.s - t / 2;
@@ -395,6 +430,7 @@ export class Viewer3D {
         if (w.axis === 'h') meterUV(geo, len, hh, t, a0, e0 + y0, 0); else meterUV(geo, t, hh, len, 0, e0 + y0, -a1);
         const mats = w.axis === 'h' ? [plain, plain, plain, plain, matA, matB] : [matB, matA, plain, plain, plain, plain];
         const m = new THREE.Mesh(geo, mats);
+        m.userData.ifc = tag;
         const mid = (a0 + a1) / 2;
         if (w.axis === 'h') m.position.set(this.wx(mid), e0 + y0 + hh / 2, this.wz(w.c));
         else m.position.set(this.wx(w.c), e0 + y0 + hh / 2, this.wz(mid));
@@ -425,6 +461,17 @@ export class Viewer3D {
       const outS = ext ? sideSign(!o.a ? 'a' : 'b') : 0;
       const B = (w, h, d, m, x, y, z, cast = true) => { const mm = this.box(g, w, h, d, m, x, y + h / 2, z, { uv: false }); mm.castShadow = cast; return mm; };
       const fr = 0.055;
+      // IFC: host wall + the void this opening cuts in it (storey-local plan coords)
+      const host = f.walls.find((w) => w.type !== 'open' && w.axis === o.axis && Math.abs(w.c - o.c) < 1e-3 && o.s < w.e - 1e-3 && o.e > w.s + 1e-3);
+      const ht = host ? (host.type === 'ext' ? T_EXT : T_INT) : t;
+      const vs = host ? Math.max(o.s, host.s) : o.s, ve = host ? Math.min(o.e, host.e) : o.e;
+      const across = [o.c - ht / 2 - 0.05, o.c + ht / 2 + 0.05];
+      const opening = o.axis === 'h'
+        ? { x0: vs, x1: ve, y0: across[0], y1: across[1], z0: o.sill > 0.005 ? o.sill : 0, z1: o.head }
+        : { x0: across[0], x1: across[1], y0: vs, y1: ve, z0: o.sill > 0.005 ? o.sill : 0, z1: o.head };
+      const tag = { host: host && this.wallTags[k].get(host), opening };
+      g.userData.ifc = tag;
+      const door = (name, op, type = 'DOOR') => Object.assign(tag, { cls: 'IfcDoor', type, name, attrs: { h: o.head, w: len, op }, pset: { Pset_DoorCommon: { IsExternal: ext } } });
       if (o.kind === 'window') {
         const h = o.head - o.sill;
         B(fr, h, t * 0.5, M.frame, -len / 2 + fr / 2, o.sill, 0);
@@ -437,20 +484,27 @@ export class Viewer3D {
         for (let i = 1; i <= nV; i++) B(0.035, h - 0.08, 0.05, M.frame, -len / 2 + (len * i) / (nV + 1), o.sill + 0.04, 0);
         const nH = mull === 'grid' ? Math.max(1, Math.round(h / 0.6)) - 1 : mull === 'cross' ? 1 : 0;
         for (let i = 1; i <= nH; i++) B(len - 0.08, 0.035, 0.05, M.frame, 0, o.sill + (h * i) / (nH + 1), 0);
+        const part = !nV && !nH ? 'SINGLE_PANEL' : nV === 1 && !nH ? 'DOUBLE_PANEL_VERTICAL' : !nV && nH === 1 ? 'DOUBLE_PANEL_HORIZONTAL' : nV === 2 && !nH ? 'TRIPLE_PANEL_VERTICAL' : 'NOTDEFINED';
+        Object.assign(tag, { cls: 'IfcWindow', type: 'WINDOW', name: ext ? 'Window' : 'Internal window', attrs: { h, w: len, part }, pset: { Pset_WindowCommon: { IsExternal: ext } } });
         if (ext) {
           if (o.sill > 0.3) B(len + 0.08, 0.04, 0.16, M.frame, 0, o.sill - 0.04, outS * (t / 2 + 0.03));
           if (st.shutters && o.sill > 0.3 && len < 1.9) {
+            const shTag = { cls: 'IfcShadingDevice', type: 'SHUTTER', name: 'Window shutters' };
             for (const sx of [-1, 1]) {
               const sh = B(len / 2, h, 0.035, M.door, sx * (len * 0.75 + 0.06), o.sill, outS * (t / 2 + 0.03));
               sh.material = M.frame;
+              sh.userData.ifc = shTag;
             }
           }
           if (st.louvres && k >= 1 && len <= 3.2) {
+            const lvTag = { cls: 'IfcShadingDevice', type: 'USERDEFINED', objectType: 'Louvres', name: 'Timber louvres' };
             const n = Math.floor(len / 0.2);
-            for (let i = 0; i <= n; i++) B(0.04, h + 0.25, 0.16, M.timber, -len / 2 + (len * i) / n, o.sill - 0.1, outS * (t / 2 + 0.16));
+            for (let i = 0; i <= n; i++) B(0.04, h + 0.25, 0.16, M.timber, -len / 2 + (len * i) / n, o.sill - 0.1, outS * (t / 2 + 0.16)).userData.ifc = lvTag;
           }
         }
       } else if (o.kind === 'door' || o.kind === 'double') {
+        if (o.kind === 'double') door('Double door', 'DOUBLE_DOOR_SINGLE_SWING');
+        else door(ext ? 'External door' : 'Internal door', o.hinge === 'e' ? 'SINGLE_SWING_RIGHT' : 'SINGLE_SWING_LEFT');
         const h = o.head;
         B(0.04, h, t + 0.03, M.intDoor, -len / 2 - 0.02, 0, 0);
         B(0.04, h, t + 0.03, M.intDoor, len / 2 + 0.02, 0, 0);
@@ -470,14 +524,16 @@ export class Viewer3D {
           g.add(piv);
         }
       } else if (o.kind === 'front') {
+        door('Entrance door', 'SINGLE_SWING_LEFT');
         const h = o.head;
         B(0.07, h, t + 0.02, M.frame, -len / 2 - 0.03, 0, 0); B(0.07, h, t + 0.02, M.frame, len / 2 + 0.03, 0, 0); B(len + 0.14, 0.07, t + 0.02, M.frame, 0, h, 0);
         B(len - 0.02, h - 0.02, 0.06, M.door, 0, 0, 0);
         B(0.03, 0.9, 0.05, M.metal || M.frame, len / 2 - 0.15, 0.6, outS * 0.06);
         // canopy & step
-        B(len + 1.6, 0.14, 1.4, key === 'mediterranean' || key === 'farmhouse' ? M.timber : M.frame, 0, h + 0.28, outS * (t / 2 + 0.7));
-        B(len + 1.4, PLINTH - 0.01, 1.2, M.paving, 0, -PLINTH, outS * (t / 2 + 0.6));
+        B(len + 1.6, 0.14, 1.4, key === 'mediterranean' || key === 'farmhouse' ? M.timber : M.frame, 0, h + 0.28, outS * (t / 2 + 0.7)).userData.ifc = { cls: 'IfcBuildingElementProxy', type: 'USERDEFINED', objectType: 'Canopy', name: 'Entrance canopy' };
+        B(len + 1.4, PLINTH - 0.01, 1.2, M.paving, 0, -PLINTH, outS * (t / 2 + 0.6)).userData.ifc = { cls: 'IfcSlab', type: 'USERDEFINED', objectType: 'Step', name: 'Entrance step' };
       } else if (o.kind === 'slide') {
+        door('Sliding door', 'SLIDING_TO_LEFT');
         const h = o.head;
         B(fr, h, t * 0.55, M.frame, -len / 2 + fr / 2, 0, 0); B(fr, h, t * 0.55, M.frame, len / 2 - fr / 2, 0, 0);
         B(len, fr, t * 0.55, M.frame, 0, h - fr, 0); B(len, 0.03, t * 0.55, M.frame, 0, 0, 0);
@@ -488,12 +544,14 @@ export class Viewer3D {
           const pg = B(pw - 0.05, h - fr - 0.05, 0.018, M.glass, x, 0.03, z, false); pg.renderOrder = 2;
           B(0.04, h - fr - 0.03, 0.045, M.frame, x - pw / 2 + 0.02, 0.03, z); B(0.04, h - fr - 0.03, 0.045, M.frame, x + pw / 2 - 0.02, 0.03, z);
         }
-        if (ext && k === 0) B(len + 0.4, PLINTH - 0.01, 0.6, M.paving, 0, -PLINTH, outS * (t / 2 + 0.3));
+        if (ext && k === 0) B(len + 0.4, PLINTH - 0.01, 0.6, M.paving, 0, -PLINTH, outS * (t / 2 + 0.3)).userData.ifc = { cls: 'IfcSlab', type: 'USERDEFINED', objectType: 'Step', name: 'Door step' };
       } else if (o.kind === 'garage') {
+        door('Garage door', 'ROLLINGUP');
         B(0.08, o.head, t + 0.02, M.frame, -len / 2 - 0.04, 0, 0); B(0.08, o.head, t + 0.02, M.frame, len / 2 + 0.04, 0, 0); B(len + 0.16, 0.08, t + 0.02, M.frame, 0, o.head, 0);
         const gd = this.box(g, len, o.head, 0.06, M.garageDoor, 0, o.head / 2, -outS * 0.03, { uv: false });
         const uv = gd.geometry.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * len, uv.getY(i) * o.head);
       }
+      if (!tag.cls) Object.assign(tag, { cls: 'IfcBuildingElementProxy', type: 'USERDEFINED', objectType: o.kind, name: o.kind });
       this.floorGroups[k].add(g);
     }
   }
@@ -507,6 +565,7 @@ export class Viewer3D {
     for (const ed of edges) {
       const len = ed.e - ed.s, mid = (ed.s + ed.e) / 2;
       const g = new THREE.Group();
+      g.userData.ifc = { cls: 'IfcRailing', type: 'GUARDRAIL', name: 'Glass balustrade', pset: { Pset_RailingCommon: { IsExternal: true } } };
       if (ed.axis === 'h') g.position.set(this.wx(mid), e0, this.wz(ed.c)); else { g.position.set(this.wx(ed.c), e0, this.wz(mid)); g.rotation.y = Math.PI / 2; }
       const gl = this.box(g, len, 1.0, 0.02, M.rail, 0, 0.55, 0, { uv: false, cast: false }); gl.renderOrder = 3;
       this.box(g, len + 0.04, 0.05, 0.06, M.frame, 0, 1.06, 0, { uv: false });
@@ -526,6 +585,7 @@ export class Viewer3D {
         g.position.set(this.wx(it.x + it.w / 2), e0 + 0.02, this.wz(it.y + it.h / 2));
         g.rotation.y = BACK_ROT[it.back] ?? 0;
         g.userData.room = rid;
+        g.userData.ifc = furnitureTag(it, rid);
         this.furnGroups[k].add(g);
       }
     }
@@ -560,22 +620,29 @@ export class Viewer3D {
         const t = Math.min(0.27, (st.h - 0.05 - 0.12 - 1.0) / (n1 - 1));
         const yL = yStart - (n1 - 1) * t;
         const x1a = st.x + 0.08, x1b = st.x + 1.25, x2a = st.x + 1.35, x2b = st.x + st.w - 0.08;
-        const step = (xa, xb, ya, yb, topY) => {
+        const stair = { cls: 'IfcStair', type: 'HALF_TURN_STAIR', name: 'Stair', pset: { Pset_StairCommon: { NumberOfRiser: n, NumberOfTreads: n - 2, RiserHeight: { t: 'IfcPositiveLengthMeasure', v: rh }, TreadLength: { t: 'IfcPositiveLengthMeasure', v: t } } } };
+        const flight = (i, risers) => ({ cls: 'IfcStairFlight', type: 'STRAIGHT', name: `Stair flight ${i}`, part: stair, attrs: { risers, treads: risers - 1, riser: rh, tread: t } });
+        const fl1 = flight(1, n1), fl2 = flight(2, n2);
+        const step = (xa, xb, ya, yb, topY, tag) => {
           const w = xb - xa, dd = yb - ya;
-          if (solid) this.box(g, w, topY, dd, M.stair, this.wx(xa + w / 2), e0 + topY / 2, this.wz(ya + dd / 2), { ox: xa, oz: ya });
-          else this.box(g, w, 0.05, dd, M.stair, this.wx(xa + w / 2), e0 + topY - 0.025, this.wz(ya + dd / 2), { ox: xa, oz: ya });
+          const m = solid ? this.box(g, w, topY, dd, M.stair, this.wx(xa + w / 2), e0 + topY / 2, this.wz(ya + dd / 2), { ox: xa, oz: ya })
+            : this.box(g, w, 0.05, dd, M.stair, this.wx(xa + w / 2), e0 + topY - 0.025, this.wz(ya + dd / 2), { ox: xa, oz: ya });
+          m.userData.ifc = tag;
         };
-        for (let i = 0; i < n1 - 1; i++) step(x1a, x1b, yStart - (i + 1) * t, yStart - i * t, (i + 1) * rh);
+        for (let i = 0; i < n1 - 1; i++) step(x1a, x1b, yStart - (i + 1) * t, yStart - i * t, (i + 1) * rh, fl1);
         // landing
         const lw = x2b - x1a, ld = yL - (st.y + 0.12);
-        this.box(g, lw, solid ? n1 * rh : 0.16, ld, M.stair, this.wx(x1a + lw / 2), e0 + (solid ? (n1 * rh) / 2 : n1 * rh - 0.08), this.wz(st.y + 0.12 + ld / 2), { ox: x1a, oz: st.y });
-        for (let j = 0; j < n2 - 1; j++) step(x2a, x2b, yL + j * t, yL + (j + 1) * t, (n1 + j + 1) * rh);
+        this.box(g, lw, solid ? n1 * rh : 0.16, ld, M.stair, this.wx(x1a + lw / 2), e0 + (solid ? (n1 * rh) / 2 : n1 * rh - 0.08), this.wz(st.y + 0.12 + ld / 2), { ox: x1a, oz: st.y })
+          .userData.ifc = { cls: 'IfcSlab', type: 'LANDING', name: 'Stair landing', part: stair };
+        for (let j = 0; j < n2 - 1; j++) step(x2a, x2b, yL + j * t, yL + (j + 1) * t, (n1 + j + 1) * rh, fl2);
         // central spine wall doubles as balustrade above
         const sl = yStart - yL;
-        this.box(g, 0.1, H + 0.95, sl, M.int, this.wx(st.x + 1.3), e0 + (H + 0.95) / 2, this.wz(yL + sl / 2));
+        this.box(g, 0.1, H + 0.95, sl, M.int, this.wx(st.x + 1.3), e0 + (H + 0.95) / 2, this.wz(yL + sl / 2))
+          .userData.ifc = { cls: 'IfcWall', type: 'STANDARD', name: 'Stair spine wall', pset: { Pset_WallCommon: { IsExternal: false } } };
       } else {
         // top floor: guard rail along the spine edge above flight 1
         const gg = new THREE.Group();
+        gg.userData.ifc = { cls: 'IfcRailing', type: 'GUARDRAIL', name: 'Stair guardrail' };
         gg.position.set(this.wx(st.x + 0.65), e0, this.wz(st.y + st.h));
         const gl = this.box(gg, 1.3, 1.0, 0.02, M.rail, 0, 0.55, 0, { uv: false, cast: false }); gl.renderOrder = 3;
         this.box(gg, 1.34, 0.05, 0.06, M.frame, 0, 1.06, 0, { uv: false });
@@ -590,24 +657,30 @@ export class Viewer3D {
     const topF = d.floors[this.F - 1];
     const rooms = topF.rooms;
     const eave = this.elev(this.F);
+    const roofPlane = (name = 'Roof plane') => ({ cls: 'IfcSlab', type: 'ROOF', name, part: this.roofTag, pset: { Pset_SlabCommon: { IsExternal: true } } });
+    const gableWall = { cls: 'IfcWall', type: 'STANDARD', name: 'Gable wall', pset: { Pset_WallCommon: { IsExternal: true } } };
     if (st.roof === 'flat') {
       // parapet on exterior wall lines
       for (const w of topF.walls.filter((x) => x.type === 'ext')) {
         const len = w.e - w.s + T_EXT;
         const mid = (w.s + w.e) / 2, h = 0.55;
         const extMat = this.faceMat(null, w.a || w.b, topF, this.F - 1);
-        if (w.axis === 'h') this.box(grp, len, h, T_EXT, extMat, this.wx(mid), eave + h / 2, this.wz(w.c), { ox: w.s, oy: eave });
-        else this.box(grp, T_EXT, h, len, extMat, this.wx(w.c), eave + h / 2, this.wz(mid), { oz: w.s, oy: eave });
+        const m = w.axis === 'h' ? this.box(grp, len, h, T_EXT, extMat, this.wx(mid), eave + h / 2, this.wz(w.c), { ox: w.s, oy: eave })
+          : this.box(grp, T_EXT, h, len, extMat, this.wx(w.c), eave + h / 2, this.wz(mid), { oz: w.s, oy: eave });
+        m.userData.ifc = { cls: 'IfcWall', type: 'PARAPET', name: 'Parapet', pset: { Pset_WallCommon: { IsExternal: true } } };
       }
       // coping
+      const coping = { cls: 'IfcCovering', type: 'USERDEFINED', objectType: 'Coping', name: 'Parapet coping' };
       for (const w of topF.walls.filter((x) => x.type === 'ext')) {
         const len = w.e - w.s + T_EXT + 0.04, mid = (w.s + w.e) / 2;
-        if (w.axis === 'h') this.box(grp, len, 0.04, T_EXT + 0.06, M.frame, this.wx(mid), eave + 0.57, this.wz(w.c), { uv: false });
-        else this.box(grp, T_EXT + 0.06, 0.04, len, M.frame, this.wx(w.c), eave + 0.57, this.wz(mid), { uv: false });
+        const m = w.axis === 'h' ? this.box(grp, len, 0.04, T_EXT + 0.06, M.frame, this.wx(mid), eave + 0.57, this.wz(w.c), { uv: false })
+          : this.box(grp, T_EXT + 0.06, 0.04, len, M.frame, this.wx(w.c), eave + 0.57, this.wz(mid), { uv: false });
+        m.userData.ifc = coping;
       }
       if (st.overhang > 0.05) {
         const bb = bbox(rooms), ov = 0.6;
-        this.box(grp, bb.w + ov * 2, 0.12, bb.h + ov * 2, [M.ext, M.ext, M.roofTop, M.ceiling, M.ext, M.ext], this.wx(bb.x + bb.w / 2), eave + 0.62, this.wz(bb.y + bb.h / 2));
+        this.box(grp, bb.w + ov * 2, 0.12, bb.h + ov * 2, [M.ext, M.ext, M.roofTop, M.ceiling, M.ext, M.ext], this.wx(bb.x + bb.w / 2), eave + 0.62, this.wz(bb.y + bb.h / 2))
+          .userData.ifc = roofPlane('Roof overhang');
       }
       return;
     }
@@ -620,7 +693,8 @@ export class Viewer3D {
     const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
     const roofMat = M.roof;
     // soffit
-    this.box(grp, W, 0.08, Dd, [M.ext, M.ext, M.ceiling, M.ceiling, M.ext, M.ext], cx, eave - 0.04, cz, { uv: false });
+    this.box(grp, W, 0.08, Dd, [M.ext, M.ext, M.ceiling, M.ceiling, M.ext, M.ext], cx, eave - 0.04, cz, { uv: false })
+      .userData.ifc = { cls: 'IfcCovering', type: 'CEILING', name: 'Eaves soffit' };
     const ridgeAlongX = W >= Dd;
     if (st.roof === 'gable') {
       const span = ridgeAlongX ? Dd : W;
@@ -632,6 +706,7 @@ export class Viewer3D {
       const ang = Math.atan2(yR - yE, half);
       for (const s of [-1, 1]) {
         const m = this.box(grp, ridgeAlongX ? W + 0.0 : 0.18, 0.18, ridgeAlongX ? slopeLen : 0.18, roofMat, 0, 0, 0, { uv: false });
+        m.userData.ifc = roofPlane();
         if (ridgeAlongX) {
           m.geometry.dispose(); m.geometry = new THREE.BoxGeometry(W, 0.16, slopeLen); meterUV(m.geometry, W, 0.16, slopeLen);
           m.position.set(cx, (yE + yR) / 2, cz + (s * half) / 2);
@@ -649,11 +724,15 @@ export class Viewer3D {
       for (const s of [-1, 1]) {
         const m = new THREE.Mesh(geo, this.mats.ext);
         m.castShadow = true; m.receiveShadow = true;
+        m.userData.ifc = { ...gableWall };
         if (ridgeAlongX) { m.rotation.y = Math.PI / 2; m.position.set(s > 0 ? x1 - ov - T_EXT / 2 : x0 + ov - T_EXT / 2, eave, (z0 + z1) / 2); if (s > 0) m.position.x = x1 - ov - T_EXT / 2; }
         else { m.position.set(cx, eave, s > 0 ? z1 - ov - T_EXT / 2 : z0 + ov - T_EXT / 2); }
         grp.add(m);
       }
-      if (st.chimney) this.box(grp, 0.7, rise + 1.2, 0.7, this.mats.accent, ridgeAlongX ? x0 + ov + 1.4 : cx + 1.0, eave + (rise + 1.2) / 2, ridgeAlongX ? cz - 0.6 : z0 + ov + 1.4);
+      if (st.chimney) {
+        this.box(grp, 0.7, rise + 1.2, 0.7, this.mats.accent, ridgeAlongX ? x0 + ov + 1.4 : cx + 1.0, eave + (rise + 1.2) / 2, ridgeAlongX ? cz - 0.6 : z0 + ov + 1.4)
+          .userData.ifc = { cls: 'IfcChimney', type: 'NOTDEFINED', name: 'Chimney' };
+      }
       return;
     }
     if (st.roof === 'hip') {
@@ -679,8 +758,11 @@ export class Viewer3D {
       geo.computeVertexNormals();
       const m = new THREE.Mesh(geo, roofMat);
       m.castShadow = true; m.receiveShadow = true; grp.add(m);
+      m.userData.ifc = roofPlane('Hipped roof surface');
       // fascia
-      this.box(grp, W + 0.02, 0.18, Dd + 0.02, [M.frame, M.frame, M.ceiling, M.ceiling, M.frame, M.frame], cx, yE - 0.09, cz, { uv: false }).material[2] = roofMat;
+      const fascia = this.box(grp, W + 0.02, 0.18, Dd + 0.02, [M.frame, M.frame, M.ceiling, M.ceiling, M.frame, M.frame], cx, yE - 0.09, cz, { uv: false });
+      fascia.material[2] = roofMat;
+      fascia.userData.ifc = { cls: 'IfcCovering', type: 'USERDEFINED', objectType: 'Fascia', name: 'Fascia' };
       return;
     }
     if (st.roof === 'shed') {
@@ -691,6 +773,7 @@ export class Viewer3D {
       const m = this.box(grp, W, 0.16, slopeLen, roofMat, cx, (yF + yB) / 2, cz);
       m.geometry.dispose(); m.geometry = new THREE.BoxGeometry(W, 0.16, slopeLen); meterUV(m.geometry, W, 0.16, slopeLen);
       m.rotation.x = ang;
+      m.userData.ifc = roofPlane('Mono-pitch roof');
       // side infills (right triangles) + rear clerestory band
       const dIn = Dd - 2 * ov;
       const shape = new THREE.Shape([new THREE.Vector2(-dIn / 2, 0), new THREE.Vector2(dIn / 2, 0), new THREE.Vector2(-dIn / 2, rise)]);
@@ -700,12 +783,15 @@ export class Viewer3D {
         tm.rotation.y = Math.PI / 2;
         tm.position.set(s > 0 ? x1 - ov - T_EXT / 2 : x0 + ov - T_EXT / 2, eave, cz);
         tm.castShadow = true; grp.add(tm);
+        tm.userData.ifc = { ...gableWall };
       }
       const bw = W - 2 * ov;
+      const clere = { cls: 'IfcWindow', type: 'WINDOW', name: 'Clerestory window', attrs: { h: rise, w: bw, part: 'NOTDEFINED' }, pset: { Pset_WindowCommon: { IsExternal: true } } };
       const band = this.box(grp, bw, rise, 0.1, this.mats.glass, cx, eave + rise / 2, z0 + ov, { uv: false, cast: false }); band.renderOrder = 2;
-      this.box(grp, bw, 0.08, T_EXT, this.mats.frame, cx, eave + rise - 0.04, z0 + ov, { uv: false });
+      band.userData.ifc = clere;
+      this.box(grp, bw, 0.08, T_EXT, this.mats.frame, cx, eave + rise - 0.04, z0 + ov, { uv: false }).userData.ifc = clere;
       const nm = Math.round(bw / 1.2);
-      for (let i = 0; i <= nm; i++) this.box(grp, 0.06, rise, 0.12, this.mats.frame, x0 + ov + (bw * i) / nm, eave + rise / 2, z0 + ov, { uv: false });
+      for (let i = 0; i <= nm; i++) this.box(grp, 0.06, rise, 0.12, this.mats.frame, x0 + ov + (bw * i) / nm, eave + rise / 2, z0 + ov, { uv: false }).userData.ifc = clere;
     }
   }
 
@@ -725,26 +811,53 @@ export class Viewer3D {
     const lawnCol = b.style === 'mediterranean' ? '#869257' : b.style === 'tropical' ? '#5C8C45' : '#6E9050';
     const ground = new THREE.Mesh(gGeo, grassMaterial(lawnCol));
     ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; g.add(ground);
-    // street + sidewalk
     const sw = 2.2, rw = 8;
-    this.box(g, big * 2, 0.02, rw, new THREE.MeshStandardMaterial({ map: tex('asphalt', '#55575a'), roughness: 0.95 }), 0, 0.005, this.wz(py0 - sw - rw / 2), { cast: false, ox: 0, oz: 0 });
-    this.box(g, big * 2, 0.08, sw, M.paving, 0, 0.04, this.wz(py0 - sw / 2), { cast: false });
-    this.box(g, big * 2, 0.13, 0.18, new THREE.MeshStandardMaterial({ map: tex('concrete', '#BDB9B0'), roughness: 0.9 }), 0, 0.065, this.wz(py0 - sw + 0.09), { cast: false });
+    // IFC: the ground and street run to the horizon on screen; the BIM model
+    // keeps them to the plot, the street in front and a margin around it.
+    const ex0 = this.wx(px0) - 12, ex1 = this.wx(px1) + 12, ez0 = this.wz(py1) - 12, ez1 = this.wz(py0 - sw - rw) + 4;
+    const clipShape = new THREE.Shape([new THREE.Vector2(ex0, -ez1), new THREE.Vector2(ex1, -ez1), new THREE.Vector2(ex1, -ez0), new THREE.Vector2(ex0, -ez0)]);
+    clipShape.holes = shape.holes;
+    ground.userData.ifcGeometry = new THREE.ShapeGeometry(clipShape);
+    ground.userData.ifc = { cls: 'IfcGeographicElement', type: 'TERRAIN', name: 'Lawn' };
+    const clipX = (m) => {
+      const p = m.geometry.parameters, w = ex1 - ex0;
+      const cg = new THREE.BoxGeometry(w, p.height, p.depth);
+      meterUV(cg, w, p.height, p.depth, ex0 + big, 0, 0);
+      cg.translate((ex0 + ex1) / 2 - m.position.x, 0, 0);
+      m.userData.ifcGeometry = cg;
+      return m;
+    };
+    // street + sidewalk
+    const asphalt = new THREE.MeshStandardMaterial({ map: tex('asphalt', '#55575a'), roughness: 0.95, name: 'Asphalt' });
+    const kerbMat = new THREE.MeshStandardMaterial({ map: tex('concrete', '#BDB9B0'), roughness: 0.9, name: 'Kerb - concrete' });
+    clipX(this.box(g, big * 2, 0.02, rw, asphalt, 0, 0.005, this.wz(py0 - sw - rw / 2), { cast: false, ox: 0, oz: 0 })).userData.ifc = { cls: 'IfcCivilElement', name: 'Street' };
+    clipX(this.box(g, big * 2, 0.08, sw, M.paving, 0, 0.04, this.wz(py0 - sw / 2), { cast: false })).userData.ifc = { cls: 'IfcCivilElement', name: 'Footpath' };
+    clipX(this.box(g, big * 2, 0.13, 0.18, kerbMat, 0, 0.065, this.wz(py0 - sw + 0.09), { cast: false })).userData.ifc = { cls: 'IfcCivilElement', name: 'Kerb' };
     // lane markings
-    for (let x = -big; x < big; x += 6) this.box(g, 3, 0.022, 0.15, new THREE.MeshBasicMaterial({ color: '#e9e5da' }), x, 0.012, this.wz(py0 - sw - rw / 2), { cast: false, uv: false });
+    const markMat = new THREE.MeshBasicMaterial({ color: '#e9e5da', name: 'Road marking' });
+    const marks = { cls: 'IfcCivilElement', name: 'Road markings' };
+    for (let x = -big; x < big; x += 6) {
+      const lm = this.box(g, 3, 0.022, 0.15, markMat, x, 0.012, this.wz(py0 - sw - rw / 2), { cast: false, uv: false });
+      lm.userData.ifc = marks;
+      if (x - 1.5 < ex0 || x + 1.5 > ex1) lm.userData.ifcSkip = true;
+    }
     // driveway & path
-    if (s.driveway) { const dv = s.driveway; this.box(g, dv.w, 0.05, dv.h + sw, M.paving, this.wx(dv.x + dv.w / 2), 0.025, this.wz(dv.y - sw + (dv.h + sw) / 2), { cast: false, ox: dv.x, oz: dv.y }); }
-    if (s.path) { const pt = s.path; this.box(g, pt.w, 0.05, pt.h + sw, M.paving, this.wx(pt.x + pt.w / 2), 0.025, this.wz(pt.y - sw + (pt.h + sw) / 2), { cast: false, ox: pt.x, oz: pt.y }); }
+    const paving = (name) => ({ cls: 'IfcSlab', type: 'USERDEFINED', objectType: 'Paving', name });
+    if (s.driveway) { const dv = s.driveway; this.box(g, dv.w, 0.05, dv.h + sw, M.paving, this.wx(dv.x + dv.w / 2), 0.025, this.wz(dv.y - sw + (dv.h + sw) / 2), { cast: false, ox: dv.x, oz: dv.y }).userData.ifc = paving('Driveway'); }
+    if (s.path) { const pt = s.path; this.box(g, pt.w, 0.05, pt.h + sw, M.paving, this.wx(pt.x + pt.w / 2), 0.025, this.wz(pt.y - sw + (pt.h + sw) / 2), { cast: false, ox: pt.x, oz: pt.y }).userData.ifc = paving('Garden path'); }
     // patio + pergola + outdoor furniture
     if (s.patio) {
       const p = s.patio;
-      this.box(g, p.w, PLINTH, p.h, ['mediterranean', 'farmhouse'].includes(d.styleKey) ? M.paving : M.deck, this.wx(p.x + p.w / 2), PLINTH / 2, this.wz(p.y + p.h / 2), { ox: p.x, oz: p.y });
+      const paved = ['mediterranean', 'farmhouse'].includes(d.styleKey);
+      this.box(g, p.w, PLINTH, p.h, paved ? M.paving : M.deck, this.wx(p.x + p.w / 2), PLINTH / 2, this.wz(p.y + p.h / 2), { ox: p.x, oz: p.y })
+        .userData.ifc = { cls: 'IfcSlab', type: 'USERDEFINED', objectType: paved ? 'Paving' : 'Decking', name: 'Patio' };
       if (['tropical', 'mediterranean', 'japandi', 'farmhouse'].includes(d.styleKey)) {
         const hh = 2.7, pm = this.mats.timber;
-        for (const [x, y] of [[p.x + 0.15, p.y + p.h - 0.15], [p.x + p.w - 0.15, p.y + p.h - 0.15]]) this.box(g, 0.14, hh, 0.14, pm, this.wx(x), PLINTH + hh / 2, this.wz(y));
-        this.box(g, p.w, 0.2, 0.12, pm, this.wx(p.x + p.w / 2), PLINTH + hh - 0.1, this.wz(p.y + p.h - 0.15));
+        const pergola = { cls: 'IfcBuildingElementProxy', type: 'USERDEFINED', objectType: 'Pergola', name: 'Pergola' };
+        for (const [x, y] of [[p.x + 0.15, p.y + p.h - 0.15], [p.x + p.w - 0.15, p.y + p.h - 0.15]]) this.box(g, 0.14, hh, 0.14, pm, this.wx(x), PLINTH + hh / 2, this.wz(y)).userData.ifc = pergola;
+        this.box(g, p.w, 0.2, 0.12, pm, this.wx(p.x + p.w / 2), PLINTH + hh - 0.1, this.wz(p.y + p.h - 0.15)).userData.ifc = pergola;
         const n = Math.floor(p.w / 0.45);
-        for (let i = 0; i <= n; i++) this.box(g, 0.06, 0.16, p.h + 0.2, pm, this.wx(p.x + (p.w * i) / n), PLINTH + hh + 0.08, this.wz(p.y + p.h / 2));
+        for (let i = 0; i <= n; i++) this.box(g, 0.06, 0.16, p.h + 0.2, pm, this.wx(p.x + (p.w * i) / n), PLINTH + hh + 0.08, this.wz(p.y + p.h / 2)).userData.ifc = pergola;
       }
       const items = [];
       if (p.w > 4) items.push({ t: 'otable', x: p.x + p.w * 0.25 - 0.9, y: p.y + p.h / 2 - 0.45, w: 1.8, h: 0.9, back: 'N', chairs: 6 });
@@ -753,23 +866,35 @@ export class Viewer3D {
       for (const it of items) {
         const fg = buildFurniture(it, this.FM, {}); if (!fg) continue;
         fg.position.set(this.wx(it.x + it.w / 2), PLINTH, this.wz(it.y + it.h / 2)); fg.rotation.y = BACK_ROT[it.back];
+        fg.userData.ifc = furnitureTag(it);
         g.add(fg);
       }
     }
     // pool
     if (s.pool) {
       const p = s.pool, depth = 1.5;
-      this.box(g, p.w, depth, p.h, M.poolTile, this.wx(p.x + p.w / 2), -depth / 2, this.wz(p.y + p.h / 2), { cast: false, uv: false });
+      const pool = { cls: 'IfcBuildingElementProxy', type: 'USERDEFINED', objectType: 'Swimming pool', name: 'Swimming pool', qto: { Qto_BuildingElementProxyQuantities: { NetVolume: [p.w * p.h * (depth - 0.14), 'vol'] } } };
+      const shell = this.box(g, p.w, depth, p.h, M.poolTile, this.wx(p.x + p.w / 2), -depth / 2, this.wz(p.y + p.h / 2), { cast: false, uv: false });
+      shell.userData.ifc = pool;
+      // IFC: the shell renders back faces only (an open basin); export it without its lid
+      const open = shell.geometry.clone();
+      open.setIndex(Array.from(open.index.array).filter((_, i) => i < 12 || i >= 18));
+      open.clearGroups();
+      shell.userData.ifcGeometry = open;
       const water = this.box(g, p.w, 0.02, p.h, M.water, this.wx(p.x + p.w / 2), -0.14, this.wz(p.y + p.h / 2), { cast: false, uv: false });
       water.renderOrder = 2;
+      water.userData.ifc = pool;
       const c = 0.45;
-      this.box(g, p.w + 2 * c, 0.08, c, M.paving, this.wx(p.x + p.w / 2), 0.04, this.wz(p.y - c / 2), { cast: false });
-      this.box(g, p.w + 2 * c, 0.08, c, M.paving, this.wx(p.x + p.w / 2), 0.04, this.wz(p.y + p.h + c / 2), { cast: false });
-      this.box(g, c, 0.08, p.h, M.paving, this.wx(p.x - c / 2), 0.04, this.wz(p.y + p.h / 2), { cast: false });
-      this.box(g, c, 0.08, p.h, M.paving, this.wx(p.x + p.w + c / 2), 0.04, this.wz(p.y + p.h / 2), { cast: false });
+      const coping = { cls: 'IfcSlab', type: 'USERDEFINED', objectType: 'Paving', name: 'Pool coping' };
+      this.box(g, p.w + 2 * c, 0.08, c, M.paving, this.wx(p.x + p.w / 2), 0.04, this.wz(p.y - c / 2), { cast: false }).userData.ifc = coping;
+      this.box(g, p.w + 2 * c, 0.08, c, M.paving, this.wx(p.x + p.w / 2), 0.04, this.wz(p.y + p.h + c / 2), { cast: false }).userData.ifc = coping;
+      this.box(g, c, 0.08, p.h, M.paving, this.wx(p.x - c / 2), 0.04, this.wz(p.y + p.h / 2), { cast: false }).userData.ifc = coping;
+      this.box(g, c, 0.08, p.h, M.paving, this.wx(p.x + p.w + c / 2), 0.04, this.wz(p.y + p.h / 2), { cast: false }).userData.ifc = coping;
       for (let i = 0; i < 2; i++) {
-        const fg = buildFurniture({ t: 'lounger', x: 0, y: 0, w: 0.7, h: 1.9, back: 'N' }, this.FM, {});
+        const it = { t: 'lounger', x: 0, y: 0, w: 0.7, h: 1.9, back: 'N' };
+        const fg = buildFurniture(it, this.FM, {});
         fg.position.set(this.wx(p.x + 0.6 + i * 1.1), 0.08, this.wz(p.y + p.h + c + 1.2)); fg.rotation.y = Math.PI; g.add(fg);
+        fg.userData.ifc = furnitureTag(it);
       }
     }
     // ── landscape ────────────────────────────────────────────
@@ -797,13 +922,14 @@ export class Viewer3D {
     const bedSkip = [gar && [gar.x - 0.4, gar.x + gar.w + 0.4], s.path && [s.path.x - 0.15, s.path.x + s.path.w + 0.15], s.driveway && [s.driveway.x - 0.2, s.driveway.x + s.driveway.w + 0.2]].filter(Boolean);
     let bedSegs = [[0.2, d.W - 0.2]];
     for (const [a, c] of bedSkip) bedSegs = bedSegs.flatMap(([p0, p1]) => (c <= p0 || a >= p1 ? [[p0, p1]] : [[p0, a], [c, p1]].filter(([u, v]) => v - u > 0.8)));
-    const mulch = new THREE.MeshStandardMaterial({ map: tex('mulch', '#5A4334'), roughness: 1 });
-    const edge = new THREE.MeshStandardMaterial({ color: '#3A3634', roughness: 0.5, metalness: 0.5 });
+    const mulch = new THREE.MeshStandardMaterial({ map: tex('mulch', '#5A4334'), roughness: 1, name: 'Mulch' });
+    const edge = new THREE.MeshStandardMaterial({ color: '#3A3634', roughness: 0.5, metalness: 0.5, name: 'Steel edging' });
     const shrubKind = SHRUB_KIND[garden] || 'shrub';
     for (const [a, c] of bedSegs) {
       const bedY0 = -1.35, bedY1 = -0.14;
-      this.box(g, c - a, 0.05, bedY1 - bedY0, mulch, W((a + c) / 2), 0.025, Z((bedY0 + bedY1) / 2), { cast: false, ox: a, oz: bedY0 });
-      this.box(g, c - a, 0.07, 0.015, edge, W((a + c) / 2), 0.035, Z(bedY0), { cast: false, uv: false });
+      const bed = { cls: 'IfcGeographicElement', type: 'USERDEFINED', objectType: 'Planting bed', name: 'Planting bed' };
+      this.box(g, c - a, 0.05, bedY1 - bedY0, mulch, W((a + c) / 2), 0.025, Z((bedY0 + bedY1) / 2), { cast: false, ox: a, oz: bedY0 }).userData.ifc = bed;
+      this.box(g, c - a, 0.07, 0.015, edge, W((a + c) / 2), 0.035, Z(bedY0), { cast: false, uv: false }).userData.ifc = bed;
       hard.push({ x: a, y: bedY0, w: c - a, h: bedY1 - bedY0 });
       for (let x = a + 0.5; x < c - 0.3; x += 0.95 + rand() * 0.35) plantShrub(W(x), Z(-0.7 + (rand() - 0.5) * 0.2), 0.38 + rand() * 0.2, rand, foliage, rand() > 0.75 ? 'shrub' : shrubKind);
     }
@@ -835,11 +961,11 @@ export class Viewer3D {
       plantTree(species[treeAt.length % species.length], W(x), Z(y), rand, g, foliage, 0.85 + rand() * 0.3);
     }
     // street trees in the sidewalk, with tree pits
-    const pitMat = new THREE.MeshStandardMaterial({ map: tex('mulch', '#4A3A2E'), roughness: 1 });
+    const pitMat = new THREE.MeshStandardMaterial({ map: tex('mulch', '#4A3A2E'), roughness: 1, name: 'Tree pit mulch' });
     const street = STREET_SPECIES[garden] || 'oak';
     for (let x = px0 - 13.5; x < px1 + 14; x += 9) {
       if ([s.driveway, s.path].some((r) => r && x > r.x - 1.5 && x < r.x + r.w + 1.5)) continue;
-      this.box(g, 1.1, 0.085, 1.1, pitMat, W(x), 0.043, Z(py0 - 1.1), { cast: false, ox: x, oz: py0 });
+      this.box(g, 1.1, 0.085, 1.1, pitMat, W(x), 0.043, Z(py0 - 1.1), { cast: false, ox: x, oz: py0 }).userData.ifc = { cls: 'IfcCivilElement', name: 'Tree pit' };
       plantTree(street, W(x), Z(py0 - 1.1), rand, g, foliage, 0.9);
     }
     if (garden === 'zen') {
@@ -1086,6 +1212,11 @@ export class Viewer3D {
   screenshot() {
     this.renderer.render(this.scene, this.camera);
     return this.renderer.domElement.toDataURL('image/png');
+  }
+
+  /** IFC4 BIM model of the current design, written from this scene. */
+  exportIFC() {
+    return writeIFC(this.design, this);
   }
 
   exportGLB() {

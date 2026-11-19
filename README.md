@@ -53,7 +53,12 @@ It also has a sun-position slider tied to the plot's orientation and hemisphere,
 
 **Exports:**
 
-- **IFC4 BIM model:** walls, openings, doors, windows, slabs, and spaces with area quantities. It passes ifcopenshell validation.
+- **IFC4 BIM model:** written from the live 3D scene, so it matches the 3D view.
+  - Geometry: every object is exported as tessellated geometry (`IfcTriangulatedFaceSet`), including walls, openings, doors, windows, slabs, the roof, stairs, railings, furniture, sanitaryware, paving, boundary walls, fences, trees and planting.
+  - Appearance: each material becomes an `IfcSurfaceStyle` and an `IfcMaterial` with its colour, transparency and finish. Its texture is embedded as an `IfcBlobTexture` with UV coordinates. Viewers that ignore textures still show the right colours.
+  - BIM structure: proper IFC classes (`IfcWall`, `IfcRoof`, `IfcStair`, `IfcFurniture`, `IfcSanitaryTerminal`, `IfcGeographicElement`…). Doors and windows void and fill their host walls, and furniture sits in its room's `IfcSpace`. It includes property sets, base quantities and true north.
+  - Left out: the instanced grass tufts. The lawn surface keeps its texture. The ground and street are clipped to the plot plus a margin.
+  - It passes ifcopenshell schema and rule validation.
 - **GLB** 3D scene.
 - **SVG** plans for every level.
 - **PNG** image of the 3D view.

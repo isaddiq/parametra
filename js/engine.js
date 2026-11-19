@@ -370,6 +370,14 @@ export function rectUnion(rects) {
 
 // ── Orientation ──────────────────────────────────────────────
 const DIRS = ['N', 'E', 'S', 'W'];
+/** How much each criterion counts towards the overall match, from the brief's priorities. */
+export function scoreWeights(pr) {
+  return {
+    efficiency: 1 + pr.budget / 100, proportion: 1.3, light: 0.8 + pr.light / 50, adjacency: 1.3 + pr.open / 100,
+    privacy: 0.6 + pr.privacy / 50, sun: 0.5 + pr.light / 100, areaFit: 1.1, site: 0.6 + pr.garden / 50, economy: 0.4 + pr.budget / 40,
+  };
+}
+
 export function compass(planSide, street) {
   const off = DIRS.indexOf(street) - DIRS.indexOf('S');
   return DIRS[(DIRS.indexOf(planSide) + off + 8) % 4];
@@ -854,11 +862,7 @@ function computeMetrics(d) {
   M.economy = clamp((map(compact, 0.65, 0.95, 30, 100) * 0.55 + stacked * 100 * 0.25 + 100 * terr * 0.2) * storeyK, 0, 100);
 
   // weighted overall
-  const pr = b.pri;
-  const W = {
-    efficiency: 1 + pr.budget / 100, proportion: 1.3, light: 0.8 + pr.light / 50, adjacency: 1.3 + pr.open / 100,
-    privacy: 0.6 + pr.privacy / 50, sun: 0.5 + pr.light / 100, areaFit: 1.1, site: 0.6 + pr.garden / 50, economy: 0.4 + pr.budget / 40,
-  };
+  const W = scoreWeights(b.pri);
   const score = sum(Object.keys(W).map((k) => W[k] * M[k])) / sum(Object.values(W));
 
   // cost

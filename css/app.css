@@ -448,19 +448,41 @@ body[data-route="studio"] { overflow: hidden; }
 .sched tr.r:hover td { color: var(--green); }
 .sched tr.on td { color: var(--brass); font-weight: 680; }
 .sched .zd { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; border: 1px solid var(--line-strong); vertical-align: -1px; }
-.radar { width: 100%; height: auto; display: block; }
+/* scores tab: radar profile + summary, then a meter per criterion */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.score-sum { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+/* the box owns the size: an SVG with height:auto collapses inside the scrolling grid and the meters paint over it */
+.radar-wrap { width: 100%; max-width: 340px; aspect-ratio: 340 / 256; margin: 0 auto; }
+.radar { width: 100%; height: 100%; display: block; overflow: visible; }
 .radar .ax { stroke: var(--line); }
 .radar .rg { fill: none; stroke: var(--line); }
-.radar .area { fill: color-mix(in srgb, var(--green) 18%, transparent); stroke: var(--green); stroke-width: 2; stroke-linejoin: round; }
-.radar .pt { fill: var(--surface); stroke: var(--green); stroke-width: 2; }
-.radar text { font: 600 11px var(--font); fill: var(--muted); }
-.bars { display: grid; gap: 14px; }
-.bar { display: grid; gap: 5px; }
-.bar .br-top { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; font-weight: 620; }
-.bar p { font-size: 13px; color: var(--muted); }
-.bar .tr { height: 6px; border-radius: 6px; background: var(--sunken); overflow: hidden; }
-.bar .tr i { display: block; height: 100%; border-radius: 6px; background: var(--green); transition: width .5s cubic-bezier(.2,.8,.2,1); }
-.bar .tr i.lo { background: var(--warn); }
+.radar .rg.out { stroke: var(--line-strong); }
+.radar .area { fill: color-mix(in srgb, var(--green) 16%, transparent); stroke: var(--green); stroke-width: 2; stroke-linejoin: round; }
+.radar .pt { fill: var(--surface); stroke: var(--green); stroke-width: 2; transition: r .15s; }
+.radar .hit { fill: transparent; }
+.radar .pt-g { cursor: default; }
+.radar .pt-g.hot .pt { r: 6; fill: var(--green); }
+.radar text { font: 600 11.5px var(--font); fill: var(--muted); }
+.radar text.hot { fill: var(--ink); }
+.score-key { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--line); padding-top: 12px; gap: 12px; }
+.score-key div { display: grid; gap: 2px; min-width: 0; }
+.score-key dt { font-size: 12.5px; color: var(--muted); }
+.score-key dd { margin: 0; font-size: 14px; font-weight: 650; }
+.tab-body .sub { font-size: 13px; color: var(--muted); margin: -4px 0 12px; }
+.meters { display: grid; }
+.meter { position: relative; display: grid; gap: 6px; padding: 12px 8px; margin: 0 -8px; border-radius: 6px; transition: background .15s; }
+.meter + .meter::before { content: ''; position: absolute; top: 0; left: 8px; right: 8px; border-top: 1px solid var(--line); }
+.meter:first-child { padding-top: 4px; }
+.meter.hot { background: var(--sunken); }
+.meter .m-top { display: flex; align-items: baseline; gap: 8px; }
+.meter .m-name { font-size: 14px; font-weight: 640; min-width: 0; }
+.meter .m-w { font-size: 12px; color: var(--muted); white-space: nowrap; margin-right: auto; }
+.meter .m-v { display: inline-flex; align-items: center; gap: 4px; font-size: 15px; font-weight: 720; font-variant-numeric: tabular-nums; }
+.meter .m-v svg { width: 15px; height: 15px; color: var(--warn); }
+.meter p { font-size: 13px; color: var(--muted); }
+.meter .tr { display: block; height: 6px; border-radius: 6px; background: var(--sunken); overflow: hidden; }
+.meter .tr i { display: block; height: 100%; border-radius: 6px; background: var(--green); transition: width .5s cubic-bezier(.2,.8,.2,1); }
+.meter.lo .tr i { background: var(--warn); }
 .swatches { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .swatches div { display: grid; gap: 6px; font-size: 12.5px; color: var(--muted); }
 .swatches i { display: block; height: 52px; border-radius: 6px; border: 1px solid var(--line); }

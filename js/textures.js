@@ -252,6 +252,7 @@ export function tex(kind, color, { anisotropy = 8 } = {}) {
   t.anisotropy = anisotropy;
   t.repeat.set(1 / size, 1 / size);
   t.userData.size = size;
+  t.userData.kind = kind;
   cache.set(key, t);
   return t;
 }
