@@ -121,6 +121,11 @@ svg.i, .icon-btn svg { width: 18px; height: 18px; flex: none; }
 .nav-flow a { text-decoration: none; font-weight: 600; font-size: 14px; color: var(--muted); padding: 6px 10px; border-radius: 6px; }
 .nav-flow li.on a { color: var(--ink); background: var(--sunken); }
 .nav-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.nav-ext { text-decoration: none; }
+@media (max-width: 480px) {
+  .nav-actions { gap: 4px; }
+  html body[data-route="home"] .brand span { display: none; } /* room for the profile and GitHub links beside the call to action */
+}
 body:not([data-route="home"]) .nav-links { display: none; }
 body:not([data-route="home"]) .nav-flow { display: flex; }
 body[data-route="brief"] .nav-cta, body[data-route="studio"] .nav-cta { display: none; }
