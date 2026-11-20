@@ -4,13 +4,17 @@
 //  Typology: "banded spine" plan. Each storey is three bands:
 //     front band (street) · circulation spine · back band (garden)
 //  Rooms are packed into bands as slots (single rooms or stacked
-//  columns such as walk-in + ensuite). Widths are solved with a
-//  weighted flex distribution, a U-stair aligns through all levels,
-//  then walls / doors / windows / furniture are derived and every
-//  variant is scored against the brief.
+//  columns such as walk-in + ensuite). Band widths are solved exactly
+//  (solver.js) inside an envelope capped by the planning rules
+//  (rules.js), a U-stair aligns through all levels, then walls /
+//  doors / windows / furniture are derived. Every variant is checked
+//  against every rule: one that breaks a rule is rejected, and the
+//  rest are scored against the brief.
 // ─────────────────────────────────────────────────────────────
 import { ROOM_TYPES, STYLES, HABITABLE, WET, BEDROOMS, OPTION_NAMES } from './data.js';
 import { furnishRoom } from './furniture.js';
+import { distribute, partition } from './solver.js';
+import { envelope, checkDesign, diagnose, candidateFixes, describePatch } from './rules.js';
 
 export const CORR = 1.2;       // spine width
 export const STAIR_W = 2.6;    // U-stair slot width
@@ -18,6 +22,8 @@ export const GARAGE_D = 6.0;   // garage depth
 export const T_EXT = 0.25;     // exterior wall thickness
 export const T_INT = 0.12;     // interior wall thickness
 export const SLAB = 0.3;       // floor slab thickness
+const DB_MIN = 3.6;            // shallowest garden band the rooms still work in
+const DF_MIN = 3.0;            // shallowest street band
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const sum = (a) => a.reduce((s, v) => s + v, 0);
@@ -92,15 +98,9 @@ const itemMin = (it, depth, scale) => sum(it.slots.map((s) => slotM(s, depth, sc
 
 function fillSegment(slots, L, depth, scale, filler) {
   const M = slots.map((s) => slotM(s, depth, scale));
-  const ws = M.map((m) => m.pref);
+  // exact least-squares widths: flexible rooms absorb the difference, all within their limits
+  const ws = distribute(M.map((m) => m.pref), M.map((m) => m.min), M.map((m) => m.max), M.map((m) => m.flex), L).w;
   let delta = L - sum(ws);
-  for (let it = 0; it < 12 && Math.abs(delta) > 1e-4; it++) {
-    const f = M.map((m, i) => (delta > 0 ? (ws[i] < m.max - 1e-6 ? m.flex : 0) : ws[i] > m.min + 1e-6 ? m.flex : 0));
-    const Fs = sum(f);
-    if (Fs <= 0) break;
-    for (let i = 0; i < ws.length; i++) if (f[i]) ws[i] = clamp(ws[i] + (delta * f[i]) / Fs, M[i].min, M[i].max);
-    delta = L - sum(ws);
-  }
   let out = slots.map((s, i) => ({ slot: s, w: ws[i] }));
   let overflow = 0;
   if (delta > 1e-3) {
@@ -247,18 +247,25 @@ function rebalanceFloors(G, U, dF, dB, scale) {
   }
 }
 
-function balance(items, dF, dB, scale) {
+/**
+ * Split items between the street and garden bands. Free ('any') items start from a greedy
+ * longest-first split; when the bands, not the target area, set the envelope width
+ * (longer band > `target`), the exact partition replaces it with the narrowest possible split.
+ */
+function balance(items, dF, dB, scale, target = 0, squeeze = false) {
   const front = items.filter((i) => i.band === 'front');
   const back = items.filter((i) => i.band === 'back');
   const any = items.filter((i) => i.band === 'any').sort((p, q) => itemW(q, (dF + dB) / 2, scale) - itemW(p, (dF + dB) / 2, scale));
-  let lf = sum(front.map((i) => itemW(i, dF, scale)));
-  let lb = sum(back.map((i) => itemW(i, dB, scale)));
-  for (const it of any) {
-    const wf = itemW(it, dF, scale), wb = itemW(it, dB, scale);
-    if (lf + wf <= lb + wb) { front.push(it); lf += wf; } else { back.push(it); lb += wb; }
-  }
+  // squeeze: rooms will be held near their minimum widths, so split by those instead
+  const len = squeeze ? itemMin : itemW;
+  const bf = sum(front.map((i) => len(i, dF, scale))), bb = sum(back.map((i) => len(i, dB, scale)));
+  const wf = any.map((it) => len(it, dF, scale)), wb = any.map((it) => len(it, dB, scale));
+  let gf = bf, gb = bb;
+  const seed = any.map((_, i) => { if (gf + wf[i] <= gb + wb[i]) { gf += wf[i]; return 0; } gb += wb[i]; return 1; });
+  const asg = Math.max(gf, gb) > target + 1e-6 ? partition(bf, bb, wf, wb, seed) || seed : seed;
+  any.forEach((it, i) => (asg[i] ? back : front).push(it));
   sortItems(front); sortItems(back);
-  return { front, back, lf, lb };
+  return { front, back, lf: sum(front.map((i) => itemW(i, dF, scale))), lb: sum(back.map((i) => itemW(i, dB, scale))) };
 }
 
 // ── Geometry helpers ─────────────────────────────────────────
@@ -384,7 +391,14 @@ export function compass(planSide, street) {
 }
 
 // ── Main generator ───────────────────────────────────────────
-export function generateDesign(b, v, { furnish = true } = {}) {
+/**
+ * Lay out one variant. `caps` (from rules.envelope) are hard limits on the envelope:
+ * bands are made shallower to fit the buildable depth, and the width is held to the
+ * buildable width, coverage and floor-area caps, with rooms squeezed towards their
+ * minimum widths, never below them. If even the minimum program overruns a cap, the
+ * design is still built at its minimum size, and the rule check rejects it.
+ */
+export function generateDesign(b, v, { furnish = true, caps = null } = {}) {
   const style = STYLES[b.style] || STYLES.modern;
   const R = buildProgram(b);
   const F = clamp(Math.round(b.floors), 1, 3);
@@ -392,8 +406,14 @@ export function generateDesign(b, v, { furnish = true } = {}) {
   const risers = Math.ceil(H / 0.18);
   const stairNeed = F > 1 ? Math.ceil(risers / 2) * 0.26 + 1.55 : 0;
   const sizeK = clamp(Math.sqrt(b.area / (F * 115)), 0.9, 1.2);
-  const dB = r3(Math.round(v.dB * sizeK * 10) / 10);
-  const dF = r3(Math.max(Math.round(v.dF * sizeK * 10) / 10, stairNeed));
+  let dB = r3(Math.round(v.dB * sizeK * 10) / 10);
+  let dF = r3(Math.max(Math.round(v.dF * sizeK * 10) / 10, stairNeed));
+  const garD = R.garage ? GARAGE_D : 0; // a garage deeper than the street band projects towards the street
+  if (caps) {
+    let over = Math.max(dF, garD) + CORR + dB - caps.D;
+    if (over > 1e-6) { const t = Math.min(over, Math.max(0, dB - DB_MIN)); dB = r3(dB - t); over -= t; }
+    if (over > 1e-6 && dF > garD) { const t = Math.min(over, Math.max(0, dF - Math.max(DF_MIN, stairNeed, garD))); dF = r3(dF - t); }
+  }
   const D = r3(dF + CORR + dB);
 
   const progRooms = [R.foyer, R.living, R.dining, R.kitchen, R.pantry, R.family, R.powder, R.laundry, R.storage, R.study, R.gym, R.media, R.guest, R.master, R.ensuite, R.wic, ...R.bedrooms, ...R.baths].filter(Boolean);
@@ -401,14 +421,26 @@ export function generateDesign(b, v, { furnish = true } = {}) {
   const stairArea = F > 1 ? STAIR_W * dF * F : 0;
   const scale = clamp((b.area * 0.8 - stairArea) / baseSum, 0.72, 1.8);
 
+  const Wt = b.area / (F * D);
+  let Wcap = Infinity;
+  if (caps) {
+    const garW = R.garage ? (R.garage.cars > 1 ? 6.4 : 3.8) : 0;
+    const garA = garW * Math.max(dF, garD);
+    Wcap = Math.min(caps.W, (caps.footprint - garW * Math.max(0, garD - dF)) / D, (caps.gross + garA) / (F * D));
+  }
   const { G, U } = assignProgram(b, R, F, v);
   rebalanceFloors(G, U, dF, dB, scale);
-  const gB = balance(G, dF, dB, scale);
+  let gB = balance(G, dF, dB, scale, Math.min(Wt, Wcap));
+  if (Math.max(gB.lf, gB.lb) > Wcap) gB = balance(G, dF, dB, scale, 0, true); // cap binds: narrowest split at minimum widths
   const midD = (dF + dB) / 2;
   const upperNeed = U.map((items) => (sum(items.map((i) => itemW(i, midD, scale))) + STAIR_W) / 2 + 0.4);
   const upperMin = U.map((items) => (sum(items.map((i) => itemMin(i, midD, scale))) + STAIR_W) / 2 + 0.3);
-  const Wt = b.area / (F * D);
   let W = r3(Math.max(Wt, gB.lf, gB.lb, ...upperMin, ...upperNeed.map((n) => n * 0.85)));
+  if (W > Wcap) {
+    // hold the envelope to the rules: squeeze rooms towards their minimum widths, never below
+    const gMin = Math.max(sum(gB.front.map((i) => itemMin(i, dF, scale))), sum(gB.back.map((i) => itemMin(i, dB, scale))));
+    W = r3(Math.max(Wcap, gMin, ...upperMin));
+  }
 
   let floors, overflow, sx = 0;
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -498,6 +530,7 @@ export function generateDesign(b, v, { furnish = true } = {}) {
   design.site = computeSite(design);
   if (furnish) furnishDesign(design);
   design.metrics = computeMetrics(design);
+  design.compliance = checkDesign(design);
   return design;
 }
 
@@ -916,38 +949,56 @@ export function describe(d) {
   if (terr.length) lines.push(`Upper volume steps back to create ${Math.round(sum(terr.map((t) => t.w * t.h)))} m² of terrace.`);
   if (M.economy > 75 && d.nFloors > 1) lines.push('Wet rooms stack vertically — shorter plumbing runs and lower build cost.');
   if (d.site.pool) lines.push('Pool positioned beyond the patio, aligned with the living axis.');
-  if (!d.site.fitsW) warns.push(`Footprint is ${d.site.overW.toFixed(1)} m wider than the buildable width — consider another storey or a smaller brief.`);
-  if (!d.site.fitsD) warns.push('Footprint exceeds buildable depth after setbacks.');
+  for (const f of d.compliance?.failed || []) warns.push(`Breaks the ${f.label.toLowerCase()} rule: ${f.detail.charAt(0).toLowerCase()}${f.detail.slice(1)}.`);
   for (const c of d.adjChecks || []) if (c.ok < 0.5 && c.w >= 2) warns.push(`Weak link: ${c.label}.`);
   if (M.areaFit < 60) warns.push(`Gross area ${M.gross} m² deviates from the ${b.area} m² target — the program needs ${M.gross > b.area ? 'more' : 'less'} space than requested.`);
   return { lines, warns };
 }
 
 // ── Variant search & recommendation ─────────────────────────
-export function recommend(b, count = 4) {
+/** Generate every variant of the parameter grid inside the rule envelope. */
+function sweep(b, { mirror = true, stopAtFirst = false } = {}) {
   const F = clamp(Math.round(b.floors), 1, 3);
+  const caps = envelope(b);
   const dBs = [4.4, 5.0, 5.6];
   const dFs = b.garage ? [4.0, 4.6, 5.2] : [3.8, 4.4, 5.0];
   const stairs = F > 1 ? [0, 1, 2] : [0];
-  const cands = [];
-  for (const dB of dBs) for (const dF of dFs) for (const stair of stairs) for (const mirror of [false, true]) for (const kitchenFront of [false, true]) {
-    try {
-      cands.push(generateDesign(b, { dB, dF, stair, mirror, kitchenFront }, { furnish: false }));
-    } catch (e) { console.warn('variant failed', e); }
+  const out = [];
+  for (const dB of dBs) for (const dF of dFs) for (const stair of stairs) for (const m of mirror ? [false, true] : [false]) for (const kitchenFront of [false, true]) {
+    let d;
+    try { d = generateDesign(b, { dB, dF, stair, mirror: m, kitchenFront }, { furnish: false, caps }); } catch (e) { console.warn('variant failed', e); continue; }
+    out.push(d);
+    if (stopAtFirst && d.compliance.ok) return out;
   }
-  cands.sort((p, q) => q.metrics.score - p.metrics.score || p.metrics.gross - q.metrics.gross);
-  // drop geometric duplicates (different parameters can converge on the same plan)
+  return out;
+}
+
+/** Drop geometric duplicates: different parameters can converge on the same plan. */
+function dedupe(cands) {
   const seen = new Set();
-  const uniqC = cands.filter((d) => {
+  return cands.filter((d) => {
     const g = d.floors.map((f) => f.rooms.map((r) => `${r.type}${r.x.toFixed(1)},${r.y.toFixed(1)},${r.w.toFixed(1)}`).sort().join(';')).join('|');
     if (seen.has(g)) return false; seen.add(g); return true;
   });
-  cands.length = 0; cands.push(...uniqC);
+}
+
+const byScore = (p, q) => q.metrics.score - p.metrics.score || p.metrics.gross - q.metrics.gross;
+
+/**
+ * Explore the variants, reject every design that breaks a planning rule, and return the
+ * best distinct ones. When no design passes, the picks are the closest designs, and
+ * `report` explains which rules no layout met (fixes come from findFixes()).
+ */
+export function recommend(b, count = 4) {
+  const all = dedupe(sweep(b));
+  const ok = all.filter((d) => d.compliance.ok);
+  const feasible = ok.length > 0;
+  const cands = feasible ? ok.sort(byScore) : [...all].sort((p, q) => p.compliance.violation - q.compliance.violation || byScore(p, q));
   const picks = [];
   const sig = (d) => `${d.variant.kitchenFront}|${d.variant.stair}`;
   for (const c of cands) { if (picks.length >= count) break; if (!picks.some((p) => sig(p) === sig(c))) picks.push(c); }
   for (const c of cands) { if (picks.length >= count) break; if (!picks.includes(c) && !picks.some((p) => p.variant.mirror === c.variant.mirror && sig(p) === sig(c) && Math.abs(p.W - c.W) < 0.6)) picks.push(c); }
-  picks.sort((p, q) => q.metrics.score - p.metrics.score);
+  picks.sort(feasible ? byScore : (p, q) => p.compliance.violation - q.compliance.violation || byScore(p, q));
   const seed = Math.abs(hash(JSON.stringify(b))) % OPTION_NAMES.length;
   picks.forEach((d, i) => {
     furnishDesign(d);
@@ -956,7 +1007,57 @@ export function recommend(b, count = 4) {
     d.tags = tagsFor(d);
     d.story = describe(d);
   });
-  return { picks, explored: cands.length };
+  const dg = diagnose(all, b);
+  const report = {
+    feasible, explored: all.length, compliant: ok.length, rejected: all.length - ok.length,
+    reasons: dg.reasons, blocking: feasible ? [] : dg.blocking,
+    closest: feasible ? [] : picks[0]?.compliance.failed.map((f) => ({ id: f.id, label: f.label, detail: f.detail })) || [],
+    rules: picks[0]?.compliance.items.length || 0, profile: picks[0]?.compliance.profile || '',
+  };
+  return { picks, explored: all.length, report };
+}
+
+/**
+ * Search for brief changes that make an infeasible brief buildable. Each candidate change is
+ * proved by regenerating the layouts and finding one that passes every rule. Single changes are
+ * tried first, cheapest first; if none works, the four closest briefs are extended (a beam
+ * search, up to four changes). Returns up to `limit` fixes: { label, steps, patch, score, gross }.
+ */
+export function findFixes(b, { budget = 2500, limit = 3 } = {}) {
+  const t0 = Date.now();
+  const key = (x) => JSON.stringify(x);
+  const closestFailed = (ds) => [...new Set([...ds].sort((p, q) => p.compliance.violation - q.compliance.violation).slice(0, 6).flatMap((d) => d.compliance.failed.map((f) => f.id)))];
+  const minV = (ds) => Math.min(...ds.map((d) => d.compliance.violation));
+  const seen = new Set([key(b)]);
+  const found = [];
+  let frontier = [{ b, steps: [], failed: closestFailed(sweep(b, { mirror: false })) }];
+  search: for (let depth = 0; depth < 4 && !found.length && frontier.length; depth++) {
+    const next = [];
+    for (const node of frontier) {
+      for (const fx of candidateFixes(node.b, node.failed).sort((p, q) => p.cost - q.cost)) {
+        if (Date.now() - t0 > budget) break search;
+        const nb = { ...node.b, ...fx.patch };
+        const k = key(nb);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const ds = sweep(nb, { mirror: false, stopAtFirst: true });
+        const steps = [...node.steps, fx];
+        if (ds.some((d) => d.compliance.ok)) found.push({ steps, brief: nb });
+        else next.push({ b: nb, steps, failed: closestFailed(ds), v: minV(ds) });
+      }
+    }
+    frontier = next.sort((p, q) => p.v - q.v).slice(0, 4);
+  }
+  const cost = (f) => sum(f.steps.map((s) => s.cost));
+  const done = new Set();
+  return found.sort((p, q) => p.steps.length - q.steps.length || cost(p) - cost(q)).map((f) => {
+    const patch = Object.fromEntries(Object.entries(Object.assign({}, ...f.steps.map((s) => s.patch))).filter(([k, v]) => b[k] !== v));
+    return { f, patch, key: key(patch) };
+  }).filter((x) => !done.has(x.key) && done.add(x.key)).slice(0, limit).map(({ f, patch }) => {
+    const best = dedupe(sweep(f.brief)).filter((d) => d.compliance.ok).sort(byScore)[0];
+    const steps = describePatch(b, patch);
+    return { label: steps.join(' and '), steps, patch, score: best?.metrics.score ?? null, gross: best?.metrics.gross ?? null };
+  });
 }
 
 function tagsFor(d) {

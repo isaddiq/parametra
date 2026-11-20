@@ -128,8 +128,37 @@ export const STYLES = {
   },
 };
 
+// ─────────────────────────────────────────────────────────────
+//  Planning rules — hard constraints every design must meet.
+//  Zoning profiles are typical starting values, not any one city's
+//  code: users should overwrite them with their council's numbers.
+//  coverage  max % of the plot covered by the footprint (incl. garage)
+//  far       max floor area ratio (gross floor area excl. garage ÷ plot area)
+//  height    max height (m) from ground to ridge or parapet
+//  storeys   max storeys above ground
+//  garden    min % of the plot left as planted, permeable ground
+//  parking   min off-street parking spaces
+// ─────────────────────────────────────────────────────────────
+export const RULE_PROFILES = {
+  suburban: { name: 'Suburban', desc: 'Detached house on a typical low-density lot', coverage: 50, far: 0.8, height: 11, storeys: 2, garden: 30, parking: 1 },
+  urban:    { name: 'Urban infill', desc: 'Townhouse on a narrow city plot', coverage: 65, far: 1.6, height: 12, storeys: 3, garden: 15, parking: 0 },
+  rural:    { name: 'Rural', desc: 'Large lot with a low, spread-out footprint', coverage: 25, far: 0.4, height: 9, storeys: 2, garden: 50, parking: 2 },
+};
+export const ZONING_KEYS = ['coverage', 'far', 'height', 'storeys', 'garden', 'parking'];
+// building standards apply under every profile
+export const DEFAULT_RULES = { profile: 'suburban', ...RULE_PROFILES.suburban, ceilingMin: 2.4, daylight: 10 };
+delete DEFAULT_RULES.name; delete DEFAULT_RULES.desc;
+
+// minimum floor area (m²) and minimum clear dimension (m) per room type
+export const ROOM_MINIMUMS = {
+  living: [11, 3.0], family: [9, 2.7], dining: [7, 2.4], kitchen: [5, 1.8], flex: [6, 2.0],
+  master: [9.5, 2.8], bedroom: [7.5, 2.4], guest: [7.5, 2.4], study: [5, 2.0], gym: [7, 2.4], media: [9, 2.7],
+  bath: [2.5, 1.5], ensuite: [2.5, 1.5], powder: [1.1, 0.9], laundry: [2, 1.2],
+};
+
 export const DEFAULT_BRIEF = {
   plotW: 24, plotD: 34, setFront: 5, setSide: 1.5, setRear: 6,
+  rules: { ...DEFAULT_RULES },
   street: 'S',              // compass direction the street (front) faces
   area: 230, floors: 2, ceiling: 2.8,
   bedrooms: 4, bathrooms: 3,

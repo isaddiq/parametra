@@ -5,8 +5,9 @@
 //    #/brief   six-step guided brief with live preview
 //    #/studio  compare designs, plan + 3D, details
 // ─────────────────────────────────────────────────────────────
-import { DEFAULT_BRIEF, STYLES, METRIC_INFO, ROOM_TYPES } from './data.js';
-import { recommend, compass, scoreWeights } from './engine.js';
+import { DEFAULT_BRIEF, STYLES, METRIC_INFO, ROOM_TYPES, RULE_PROFILES, DEFAULT_RULES, ZONING_KEYS, ROOM_MINIMUMS } from './data.js';
+import { recommend, findFixes, compass, scoreWeights } from './engine.js';
+import { envelope, profileKey, profileName, rulesOf, parking } from './rules.js';
 import { renderPlan, renderThumb, PLAN_STYLE } from './plan2d.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -22,15 +23,16 @@ const DIR_NAME = { N: 'north', E: 'east', S: 'south', W: 'west' };
 const OPP = { N: 'S', S: 'N', E: 'W', W: 'E' };
 
 // ── content ─────────────────────────────────────────────────
+const zoning = (k) => ({ profile: k, ...Object.fromEntries(ZONING_KEYS.map((z) => [z, RULE_PROFILES[k][z]])) });
 const PRESETS = [
   { id: 'starter', name: 'Starter home', desc: 'Two bedrooms on one level with a single garage. A compact first home.', b: { area: 125, floors: 1, bedrooms: 2, bathrooms: 1, masterSuite: false, walkIn: false, study: false, powder: false, guest: false, family: false, media: false, gym: false, storage: true, laundry: true, garage: 1, pool: false, balcony: false, terrace: true, kitchen: 'open', pantry: false, dining: 'open', plotW: 18, plotD: 30, setSide: 1.5, style: 'scandi', ceiling: 2.7 } },
   { id: 'family', name: 'Family home', desc: 'Four bedrooms over two storeys, island kitchen, study and a double garage.', b: { ...DEFAULT_BRIEF, style: 'scandi' } },
   { id: 'villa', name: 'Luxury villa', desc: 'Five-bedroom Mediterranean villa with guest suite, media room and pool.', b: { area: 380, floors: 2, bedrooms: 5, bathrooms: 5, masterSuite: true, walkIn: true, guest: true, study: true, powder: true, family: true, media: true, gym: false, storage: true, laundry: true, garage: 2, pool: true, balcony: true, terrace: true, kitchen: 'island', pantry: true, dining: 'open', plotW: 32, plotD: 46, setSide: 2, style: 'mediterranean', ceiling: 3.1 } },
-  { id: 'urban', name: 'Urban townhouse', desc: 'Three storeys on a 13 m wide plot, with a roof terrace and galley kitchen.', b: { area: 185, floors: 3, bedrooms: 3, bathrooms: 3, masterSuite: true, walkIn: false, guest: false, study: true, powder: true, family: false, media: false, gym: false, storage: false, laundry: true, garage: 0, pool: false, balcony: true, terrace: true, kitchen: 'galley', pantry: false, dining: 'open', plotW: 13, plotD: 32, setSide: 1.0, setFront: 3, style: 'industrial', ceiling: 2.9 } },
-  { id: 'tropical', name: 'Tropical retreat', desc: 'Single-storey pavilion with deep eaves, a family room and a pool.', b: { area: 250, floors: 1, bedrooms: 3, bathrooms: 3, masterSuite: true, walkIn: true, guest: false, study: false, powder: true, family: true, media: false, gym: false, storage: true, laundry: true, garage: 1, pool: true, balcony: false, terrace: true, kitchen: 'island', pantry: true, dining: 'open', plotW: 36, plotD: 40, setSide: 3, style: 'tropical', ceiling: 3.0 } },
+  { id: 'urban', name: 'Urban townhouse', desc: 'Three storeys on a 13 m wide plot, with a roof terrace and galley kitchen.', b: { area: 185, floors: 3, bedrooms: 3, bathrooms: 3, masterSuite: true, walkIn: false, guest: false, study: true, powder: true, family: false, media: false, gym: false, storage: false, laundry: true, garage: 0, pool: false, balcony: true, terrace: true, kitchen: 'galley', pantry: false, dining: 'open', plotW: 13, plotD: 32, setSide: 1.0, setFront: 3, style: 'industrial', ceiling: 2.9, rules: zoning('urban') } },
+  { id: 'tropical', name: 'Tropical retreat', desc: 'Single-storey pavilion with deep eaves, a family room and a pool.', b: { area: 250, floors: 1, bedrooms: 3, bathrooms: 3, masterSuite: true, walkIn: true, guest: false, study: false, powder: true, family: true, media: false, gym: false, storage: true, laundry: true, garage: 1, pool: true, balcony: false, terrace: true, kitchen: 'island', pantry: true, dining: 'open', plotW: 36, plotD: 40, setSide: 3, style: 'tropical', ceiling: 3.0, rules: zoning('rural') } },
   { id: 'japandi', name: 'Japandi cabin', desc: 'A calm two-storey home in cedar and charcoal, with a master balcony.', b: { area: 160, floors: 2, bedrooms: 3, bathrooms: 2, masterSuite: true, walkIn: false, guest: false, study: true, powder: false, family: false, media: false, gym: false, storage: true, laundry: true, garage: 0, pool: false, balcony: true, terrace: true, kitchen: 'open', pantry: false, dining: 'open', plotW: 20, plotD: 30, setSide: 2, style: 'japandi', ceiling: 2.8 } },
 ];
-const presetBrief = (p) => ({ ...DEFAULT_BRIEF, hemisphere: 'N', street: 'S', ...p.b, pri: { ...DEFAULT_BRIEF.pri } });
+const presetBrief = (p) => ({ ...DEFAULT_BRIEF, hemisphere: 'N', street: 'S', ...p.b, pri: { ...DEFAULT_BRIEF.pri }, rules: { ...DEFAULT_RULES, ...(p.b.rules || {}) } });
 const HERO = PRESETS[1];
 
 const STOREYS = [[1, 'Single storey', 'Everything on one level, step-free'], [2, 'Two storeys', 'Living downstairs, bedrooms upstairs'], [3, 'Three storeys', 'A compact footprint for narrow plots']];
@@ -57,6 +59,19 @@ const PRIOS = [
   ['garden', 'Garden space', 'A smaller footprint that leaves more garden'],
 ];
 const prioWord = (v) => (v < 25 ? 'Not a concern' : v < 50 ? 'Nice to have' : v < 75 ? 'Important' : 'Essential');
+// [key, label, unit, min, max, step, hint]
+const ZONING_FIELDS = [
+  ['coverage', 'Site coverage', '%', 5, 100, 1, 'Most of the plot the house may cover'],
+  ['far', 'Floor area ratio', '×', 0.1, 5, 0.05, 'Floor area ÷ plot area, at most'],
+  ['height', 'Height limit', 'm', 4, 30, 0.5, 'To the parapet, or mid-roof if pitched'],
+  ['storeys', 'Storeys', 'max', 1, 3, 1, 'Above ground'],
+  ['garden', 'Planted ground', '%', 0, 90, 1, 'Least share kept as garden'],
+  ['parking', 'Parking', 'spaces', 0, 4, 1, 'Off-street, at least'],
+];
+const STANDARD_FIELDS = [
+  ['ceilingMin', 'Ceiling height', 'm', 2.1, 3.0, 0.05, 'Least clear height of rooms'],
+  ['daylight', 'Daylight', '%', 0, 30, 1, 'Window area ÷ floor area, at least'],
+];
 const METRIC_DESC = {
   efficiency: 'Share of floor area that is rooms rather than halls and stairs.',
   proportion: 'Rooms are well shaped, with no narrow or awkward spaces.',
@@ -84,8 +99,10 @@ const state = {
   layers: { furniture: true, dims: true, roof: true, labels: true },
   sel: null, hover: null, route: 'home',
   heroDesign: null,
+  report: null, fixes: null, // fixes: null while the search runs, [] when none is needed or found
 };
 state.brief.pri = { ...DEFAULT_BRIEF.pri, ...(state.brief.pri || {}) };
+state.brief.rules = { ...DEFAULT_RULES, ...(state.brief.rules || {}) };
 if (!STYLES[state.brief.style]) state.brief.style = 'modern';
 let viewer = null;
 
@@ -269,7 +286,7 @@ function renderHomeViewer() {
 
 // ── brief wizard ────────────────────────────────────────────
 const STEPS = [
-  { id: 'site', name: 'Plot', title: 'Start with your plot', lead: 'Plot size and setbacks keep every design buildable. Orientation lets us plan rooms around the sun.', render: stepSite },
+  { id: 'site', name: 'Plot', title: 'Start with your plot', lead: 'Plot size, setbacks and planning rules keep every design buildable. Orientation lets us plan rooms around the sun.', render: stepSite },
   { id: 'size', name: 'Size', title: 'How much house?', lead: 'Set a target floor area and the number of storeys. Every room is sized from these.', render: stepSize },
   { id: 'rooms', name: 'Rooms', title: 'Who will live here?', lead: 'Choose bedrooms, bathrooms and the extra spaces your household needs.', render: stepRooms },
   { id: 'living', name: 'Living', title: 'Kitchen, parking and outdoors', lead: 'How you cook, where the car goes, and how the house opens to the garden.', render: stepLiving },
@@ -328,6 +345,33 @@ function houseIcon() {
   return `<svg viewBox="0 0 92 92" aria-hidden="true"><rect x="14" y="14" width="64" height="64" rx="3" fill="var(--sunken)" stroke="var(--ink-2)" stroke-width="1.5"/><path d="M14 46h64" stroke="var(--line-strong)"/><rect x="30" y="74" width="32" height="7" rx="2" fill="var(--green)"/><text x="46" y="36" text-anchor="middle" font-size="10" font-weight="600" fill="var(--muted)" font-family="Archivo, sans-serif">garden</text><text x="46" y="64" text-anchor="middle" font-size="10" font-weight="600" fill="var(--muted)" font-family="Archivo, sans-serif">street</text></svg>`;
 }
 
+function ruleField([k, label, unit, min, max, step, hint]) {
+  return `<div class="num"><label for="r-${k}">${label}</label><div class="box"><input id="r-${k}" type="number" inputmode="decimal" min="${min}" max="${max}" step="${step}" data-rule="${k}" value="${state.brief.rules[k]}"><span>${unit}</span></div><small>${hint}</small></div>`;
+}
+function profileDesc() {
+  const k = profileKey(state.brief.rules);
+  return k === 'custom' ? 'Custom values. Pick a profile to reset them.' : `${RULE_PROFILES[k].desc}. Typical values, so check them against your local planning rules.`;
+}
+function envLine() {
+  const b = state.brief, r = rulesOf(b), e = envelope(b, r), pk = parking(b);
+  const over = b.area > e.gross ? ` Your ${b.area} m² target is above that, so designs will come out smaller.` : '';
+  return `This plot allows a footprint of up to <b>${Math.round(e.footprint)} m²</b> and up to <b>${Math.round(e.gross)} m²</b> of floor area, over at most ${r.storeys} storey${r.storeys > 1 ? 's' : ''}.${over} Parking: ${pk.total} space${pk.total === 1 ? '' : 's'} provided, ${r.parking} required.`;
+}
+const MIN_NOTE = `Every room must meet a minimum size: main bedroom ${ROOM_MINIMUMS.master[0]} m², other bedrooms ${ROOM_MINIMUMS.bedroom[0]} m², living room ${ROOM_MINIMUMS.living[0]} m², bathrooms ${ROOM_MINIMUMS.bath[0]} m². Every room must have a door, halls must be at least 0.9 m wide, and stair risers at most 190 mm.`;
+function stepRules() {
+  const k = profileKey(state.brief.rules);
+  return `
+    <div class="group"><h2>Planning rules</h2><p class="help">These are hard limits. A design that breaks any of them is rejected. If no design can meet them, Parametra explains why and suggests what to change.</p>
+      <div class="seg seg-wrap" role="radiogroup" aria-label="Planning rules profile" id="ruleSeg">${Object.entries(RULE_PROFILES).map(([pk, p]) => `<button type="button" role="radio" aria-checked="${k === pk}" class="${k === pk ? 'on' : ''}" data-profile="${pk}">${p.name}</button>`).join('')}</div>
+      <p class="help" id="profileDesc">${profileDesc()}</p>
+      <div class="numbers rule-nums">${ZONING_FIELDS.map(ruleField).join('')}</div>
+      <details class="more"><summary>Building standards</summary>
+        <div class="more-body"><div class="numbers rule-nums">${STANDARD_FIELDS.map(ruleField).join('')}</div><p class="help">${MIN_NOTE}</p></div>
+      </details>
+      <p class="env-line" id="envLine">${envLine()}</p>
+    </div>`;
+}
+
 function stepSite() {
   const b = state.brief;
   return `
@@ -340,6 +384,7 @@ function stepSite() {
     <div class="group"><h2>Setbacks</h2><p class="help">The minimum distance the house must keep from each boundary. Check your local planning rules.</p>
       <div class="numbers">${[['setFront', 'Front'], ['setSide', 'Each side'], ['setRear', 'Rear']].map(([k, l]) => `<div class="num"><label for="n-${k}">${l}</label><div class="box"><input id="n-${k}" type="number" inputmode="decimal" min="0" max="20" step="0.5" data-k="${k}" value="${b[k]}"><span>m</span></div></div>`).join('')}</div>
     </div>
+    ${stepRules()}
     <div class="group"><h2>Orientation</h2><p class="help">Which side of the plot is the street on?</p>
       <div class="orient">
         <div class="compass-pick" role="radiogroup" aria-label="Direction of the street">
@@ -423,9 +468,32 @@ function renderPreview() {
     <div class="pv-plan">${renderThumb(d)}</div>
     ${titleblock([['Plot', `${b.plotW} × ${b.plotD} m`], ['Floor area', `${b.area} m²`], ['Storeys', b.floors], ['Bedrooms', b.bedrooms], ['Bathrooms', b.bathrooms], ['Style', STYLES[b.style].name]], 'grid c3')}
     <div class="pv-foot">
-      <p>The best of <b>${state.explored} layouts</b> so far is <b>${d.name}</b>, a ${d.metrics.gross} m² design that matches your priorities at <b>${d.metrics.score}/100</b>.</p>
+      ${rulesStatus(1)}
+      <p>${state.report?.feasible === false
+        ? `The closest of <b>${state.explored} layouts</b> is <b>${d.name}</b>, a ${d.metrics.gross} m² design, but it breaks ${ruleCount(d)}.`
+        : `The best of <b>${state.explored} layouts</b> so far is <b>${d.name}</b>, a ${d.metrics.gross} m² design that matches your priorities at <b>${d.metrics.score}/100</b>.`}</p>
       <button type="button" class="btn btn-primary btn-block" data-go-studio>See my designs</button>
     </div>`;
+}
+
+const ruleCount = (d) => { const n = d.compliance.failed.length; return `${n} planning rule${n > 1 ? 's' : ''}`; };
+/** Why the brief cannot be built, as list items: each rule no layout met, plus what plot would pass. */
+function blockingItems(rep) {
+  const items = rep.blocking.length ? rep.blocking.map((x) => `${x.text}${x.site ? ` ${x.site}` : ''}`)
+    : [`Every layout breaks at least one rule. The closest breaks ${rep.closest.map((c) => `${c.label.toLowerCase()} (${c.detail})`).join(' and ')}.`];
+  return items.map((t) => `<li>${t}</li>`).join('');
+}
+function fixList(limit) {
+  if (state.fixes === null) return `<p class="fix-wait"><span class="spin sm"></span>Looking for changes that would make it fit…</p>`;
+  if (!state.fixes.length) return `<p class="fix-none">No combination of up to four changes to the brief fits this plot. Try a larger plot, smaller setbacks, or check the rule values.</p>`;
+  return `<div class="fixes">${state.fixes.slice(0, limit).map((f, i) => `<button type="button" class="fix" data-fix="${i}"><b>${f.label}</b><span>Tested: ${f.score != null ? `best design matches at ${f.score}/100, ${f.gross} m²` : 'passes every rule'}</span></button>`).join('')}</div>`;
+}
+/** Compliance summary for the live preview. */
+function rulesStatus(limit) {
+  const rep = state.report;
+  if (!rep) return '';
+  if (rep.feasible) return `<div class="rule-ok">${ic('check')}<span><b>Meets all ${rep.rules} planning rules.</b> ${rep.compliant} of ${rep.explored} layouts passed.</span></div>`;
+  return `<div class="rule-bad">${ic('warn')}<div><b>No layout meets the planning rules</b><ul>${blockingItems(rep)}</ul></div></div>${fixList(limit)}`;
 }
 
 function syncWizard() {
@@ -440,6 +508,11 @@ function syncWizard() {
     else if (k === 'plotW' || k === 'plotD') el.textContent = `${b[k]} m`;
     else el.textContent = b[k];
   });
+  const pk = profileKey(b.rules);
+  $$('#ruleSeg [data-profile]').forEach((el) => { const on = el.dataset.profile === pk; el.classList.toggle('on', on); el.setAttribute('aria-checked', on); });
+  $$('#wizStep [data-rule]').forEach((el) => { if (document.activeElement !== el) el.value = b.rules[el.dataset.rule]; });
+  const pdsc = $('#profileDesc'); if (pdsc) pdsc.textContent = profileDesc();
+  const envEl = $('#envLine'); if (envEl) envEl.innerHTML = envLine();
   const pd = $('#plotDiagram'); if (pd) pd.innerHTML = plotDiagram();
   const ot = $('#orientText'); if (ot) ot.innerHTML = orientText();
   const ah = $('#areaHint'); if (ah) ah.textContent = areaHint();
@@ -453,6 +526,8 @@ function bindWizard() {
     if (kv) { state.brief[kv.dataset.k] = kv.hasAttribute('data-num') ? +kv.dataset.v : kv.dataset.v; return changed(); }
     const tg = e.target.closest('[data-toggle]');
     if (tg) { const k = tg.dataset.toggle; state.brief[k] = !state.brief[k]; return changed(); }
+    const pf = e.target.closest('[data-profile]');
+    if (pf) { const k = pf.dataset.profile; state.brief.rules = { ...state.brief.rules, ...zoning(k) }; return changed(); }
     const sp = e.target.closest('[data-step]');
     if (sp) { const k = sp.dataset.step; state.brief[k] = Math.max(+sp.dataset.min, Math.min(+sp.dataset.max, state.brief[k] + +sp.dataset.d)); changed(); }
   });
@@ -462,6 +537,10 @@ function bindWizard() {
     if (el.dataset.pri) { state.brief.pri[el.dataset.pri] = +el.value; return changed(); }
     if (el.dataset.k && el.type === 'range') { state.brief[el.dataset.k] = +el.value; return changed(); }
     if (el.dataset.k && el.type === 'number' && el.value !== '') { const v = Math.max(0, Math.min(20, +el.value)); if (!Number.isNaN(v)) { state.brief[el.dataset.k] = v; changed(); } }
+    if (el.dataset.rule && el.value !== '') {
+      const v = Math.max(+el.min, Math.min(+el.max, +el.value));
+      if (!Number.isNaN(v)) { state.brief.rules = { ...state.brief.rules, [el.dataset.rule]: v }; changed(); }
+    }
   });
   $('#progress').addEventListener('click', (e) => { const b = e.target.closest('[data-goto]'); if (b) goStep(+b.dataset.goto); });
   $('#wizBack').addEventListener('click', () => goStep(state.step - 1));
@@ -491,7 +570,9 @@ function generate() {
   try {
     const res = recommend(state.brief, 4);
     state.picks = res.picks; state.explored = res.explored; state.ms = Math.round(performance.now() - t0);
+    state.report = res.report;
     state.idx = 0; state.design = state.picks[0]; state.sel = null;
+    requestFixes();
   } catch (err) {
     console.error(err);
     toast('This brief could not be laid out. Try a larger plot or fewer rooms.');
@@ -501,20 +582,75 @@ function generate() {
   if (state.route === 'studio') { renderStudio(); mountStudioViewer(true); }
 }
 
+// When no layout meets the rules, search for brief changes that would fix it. The search
+// regenerates hundreds of layouts, so it runs in a worker; a newer brief cancels an older search.
+let fixWorker = null, fixBusy = false, fixSeq = 0;
+function requestFixes() {
+  const id = ++fixSeq;
+  if (state.report.feasible) { state.fixes = []; return; }
+  state.fixes = null;
+  const brief = JSON.parse(JSON.stringify(state.brief));
+  const done = (fixes) => { if (id !== fixSeq) return; fixBusy = false; state.fixes = fixes; renderFixState(); };
+  const inline = () => setTimeout(() => { if (id === fixSeq) done(findFixes(brief)); }, 60);
+  try {
+    if (fixBusy && fixWorker) { fixWorker.terminate(); fixWorker = null; }
+    if (!fixWorker) {
+      fixWorker = new Worker(new URL('./fixworker.js', import.meta.url), { type: 'module' });
+      fixWorker.onmessage = (e) => { if (e.data.id === fixSeq) done(e.data.fixes); };
+      fixWorker.onerror = (e) => { console.warn('fix worker failed, searching on the main thread', e); e.preventDefault?.(); fixWorker?.terminate(); fixWorker = null; fixBusy = false; inline(); };
+    }
+    fixBusy = true;
+    fixWorker.postMessage({ id, brief });
+  } catch (err) { console.warn(err); inline(); }
+}
+function renderFixState() {
+  if (state.route === 'brief') renderPreview();
+  if (state.route === 'studio') renderBanner();
+}
+function applyFix(i) {
+  const fx = state.fixes?.[i]; if (!fx) return;
+  Object.assign(state.brief, fx.patch);
+  store.set('parametra.brief', state.brief);
+  clearTimeout(genTimer);
+  if (state.route === 'brief') renderWizard();
+  generate();
+  toast(`Changed: ${fx.label}`);
+}
+
 // ── studio ──────────────────────────────────────────────────
 function briefSentence(b) {
-  return [`${b.bedrooms} bedrooms`, `${b.bathrooms} bathrooms`, `${b.area} m² target`, `${b.floors} storey${b.floors > 1 ? 's' : ''}`, STYLES[b.style].name, `${b.plotW} × ${b.plotD} m plot`].join(', ');
+  return [`${b.bedrooms} bedrooms`, `${b.bathrooms} bathrooms`, `${b.area} m² target`, `${b.floors} storey${b.floors > 1 ? 's' : ''}`, STYLES[b.style].name, `${b.plotW} × ${b.plotD} m plot`, profileName(rulesOf(b))].join(', ');
 }
 function renderStudio() {
   const d = state.design; if (!d) return;
   $('#briefLine').textContent = briefSentence(state.brief);
-  $('#options').innerHTML = state.picks.map((p, i) => `
-    <button type="button" class="opt" role="tab" aria-selected="${i === state.idx}" data-opt="${i}">
+  renderBanner();
+  $('#options').innerHTML = state.picks.map((p, i) => {
+    const bad = !p.compliance.ok;
+    const nf = p.compliance.failed.length;
+    const tag = bad ? `<small class="bad">Breaks ${nf} rule${nf > 1 ? 's' : ''}</small>` : `<small class="${i === 0 ? 'best' : ''}">${i === 0 ? 'Best match' : `Option ${p.letter}`}</small>`;
+    return `
+    <button type="button" class="opt${bad ? ' fails' : ''}" role="tab" aria-selected="${i === state.idx}" data-opt="${i}">
       <span class="o-plan">${renderThumb(p)}</span>
-      <span class="o-txt"><small class="${i === 0 ? 'best' : ''}">${i === 0 ? 'Best match' : `Option ${p.letter}`}</small><b>${p.name}</b><span>${p.metrics.gross} m², about ${money(p.metrics.cost)}</span></span>
+      <span class="o-txt">${tag}<b>${p.name}</b><span>${p.metrics.gross} m², about ${money(p.metrics.cost)}</span></span>
       <span class="o-score"><b>${p.metrics.score}</b><small>match</small></span>
-    </button>`).join('');
+    </button>`;
+  }).join('');
   selectDesign(state.idx, false);
+}
+/** Shown above the options when no layout meets the rules: why, and tested changes that fix it. */
+function renderBanner() {
+  const el = $('#rulesBanner'), rep = state.report;
+  if (!el) return;
+  if (!rep || rep.feasible) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="rb-why">${ic('warn')}<div>
+      <h2>None of the ${rep.explored} layouts meets your planning rules</h2>
+      <ul>${blockingItems(rep)}</ul>
+      <p>The designs below are the closest. Each one is marked with the rules it breaks.</p>
+    </div></div>
+    <div class="rb-fix"><h3>Changes that make it fit</h3>${fixList(3)}</div>`;
 }
 function selectDesign(i, toViewer = true) {
   state.idx = i;
@@ -623,12 +759,12 @@ function selectRoom(room) {
 // details panel
 function verdict(s) { return s >= 85 ? ['Strong fit for your brief', ''] : s >= 72 ? ['Good fit for your brief', ''] : ['Fair fit, with trade-offs', 'mid']; }
 function renderDetails() {
-  const d = state.design, M = d.metrics;
-  const [vt, vc] = verdict(M.score);
+  const d = state.design, M = d.metrics, C = d.compliance;
+  const [vt, vc] = C.ok ? verdict(M.score) : [`Breaks ${ruleCount(d)}`, 'bad'];
   $('#detailsHead').innerHTML = `
     <div class="dh-top"><div><h2>${d.name}</h2><p>Option ${d.letter} of ${state.picks.length}, ${d.style.name}</p></div>
       <div class="score"><b>${M.score}</b><small>out of 100</small></div></div>
-    <span class="verdict ${vc}">${vt}</span>`;
+    <div class="dh-flags"><span class="verdict ${vc}">${vt}</span>${C.ok ? `<button type="button" class="rule-pill" data-tab-go="rules">${ic('check')}Meets all ${C.items.length} rules</button>` : ''}</div>`;
   renderTabs();
 }
 function renderTabs() {
@@ -665,6 +801,8 @@ function renderTabs() {
     html = `${card}<div><h3>Room schedule</h3><table class="sched"><tbody>${rows}</tbody></table></div>`;
   } else if (state.tab === 'scores') {
     html = scoresTab(d);
+  } else if (state.tab === 'rules') {
+    html = rulesTab(d);
   } else {
     html = `
       <div class="swatches">${[['Facade', st.ext.color], ['Accent', st.accent.color], ['Roof', st.roofMat.color], ['Frames', st.frame]].map(([n, c]) => `<div><i style="background:${c}"></i>${n}</div>`).join('')}</div>
@@ -687,6 +825,23 @@ function renderTabs() {
     set3DMode('section'); state.level3d = r.floor; viewer.setLevel(r.floor); renderViewerBar(); viewer.focusRoom(r);
   });
 }
+/** Rules tab: pass/fail for every planning rule and building standard, and why layouts were rejected. */
+function rulesTab(d) {
+  const C = d.compliance, rep = state.report, n = C.items.length;
+  const row = (it) => `<li class="${it.ok ? 'ok' : 'bad'}">${ic(it.ok ? 'check' : 'warn')}<div><b>${it.label}${it.ok ? '' : '<span class="sr"> (fails)</span>'}</b><span class="rl-d">${it.detail}</span><p>${it.desc}</p></div></li>`;
+  const list = (g) => C.items.filter((it) => it.group === g).map(row).join('');
+  const rej = rep && rep.reasons.length ? `<dl class="rs-reasons">${rep.reasons.slice(0, 4).map((r) => `<div><dt>${r.label}</dt><dd>${r.fails} rejected</dd></div>`).join('')}</dl>` : '';
+  return `
+    <div class="rules-sum ${C.ok ? 'ok' : 'bad'}">
+      <div class="rs-top">${ic(C.ok ? 'check' : 'warn')}<b>${C.ok ? `Meets all ${n} rules` : `Breaks ${C.failed.length} of ${n} rules`}</b><span>${C.profile}</span></div>
+      ${rep ? `<p>${rep.explored} layouts explored. ${rep.compliant ? `${rep.compliant} met every rule${rep.rejected ? ` and ${rep.rejected} were rejected` : ''}.` : 'None met every rule.'}</p>` : ''}
+      ${rej}
+    </div>
+    <div><h3>Planning</h3><ul class="rule-list">${list('planning')}</ul></div>
+    <div><h3>Building standards</h3><ul class="rule-list">${list('building')}</ul></div>
+    <p class="sub">The rule values are typical starting points, not your council's code. <button type="button" class="link" data-edit-rules>Edit the rules</button></p>`;
+}
+
 const LOW_SCORE = 55;
 /** Scores tab: radar profile + strongest/weakest summary, then one meter per criterion with its share of the match. */
 function scoresTab(d) {
@@ -793,8 +948,8 @@ function bindStudio() {
   $('#tabs').addEventListener('click', (e) => { const t = e.target.closest('[data-tab]'); if (t) { state.tab = t.dataset.tab; renderTabs(); } });
   $('#tabs').addEventListener('keydown', (e) => {
     if (!['ArrowRight', 'ArrowLeft'].includes(e.key)) return;
-    const ids = ['overview', 'rooms', 'scores', 'materials'];
-    state.tab = ids[(ids.indexOf(state.tab) + (e.key === 'ArrowRight' ? 1 : -1) + 4) % 4]; renderTabs(); $(`#tabs [data-tab="${state.tab}"]`).focus();
+    const ids = ['overview', 'rooms', 'scores', 'rules', 'materials'];
+    state.tab = ids[(ids.indexOf(state.tab) + (e.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length]; renderTabs(); $(`#tabs [data-tab="${state.tab}"]`).focus();
   });
   $('#tabBody').addEventListener('click', (e) => { const tr = e.target.closest('tr.r'); if (tr) selectRoom(findRoom(tr.dataset.room)); });
   $('#tabBody').addEventListener('keydown', (e) => { const tr = e.target.closest('tr.r'); if (tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectRoom(findRoom(tr.dataset.room)); } });
@@ -871,6 +1026,11 @@ function bindChrome() {
     const sty = e.target.closest('[data-start-style]');
     if (sty) { state.brief.style = sty.dataset.startStyle; store.set('parametra.brief', state.brief); generate(); state.step = 0; location.hash = '#/brief'; toast(`${STYLES[state.brief.style].name} selected. You can change it in step 5.`); return; }
     if (e.target.closest('[data-go-studio]')) goStudio();
+    const fx = e.target.closest('[data-fix]');
+    if (fx) { applyFix(+fx.dataset.fix); return; }
+    const tg = e.target.closest('[data-tab-go]');
+    if (tg) { state.tab = tg.dataset.tabGo; renderTabs(); return; }
+    if (e.target.closest('[data-edit-rules]')) { state.step = 0; location.hash = '#/brief'; setTimeout(() => $('#ruleSeg')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 60); }
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDropdowns(); });
   const applyIcon = () => {
@@ -931,6 +1091,7 @@ async function doExport(kind) {
       const data = {
         generator: 'Parametra', option: `${d.letter} ${d.name}`, style: d.style.name, brief: d.brief,
         envelope: { width: d.W, depth: d.D, storeys: d.nFloors, floorToFloor: d.H }, metrics: d.metrics, narrative: d.story,
+        compliance: { rules: d.compliance.profile, passes: d.compliance.ok, checks: d.compliance.items.map(({ id, label, ok, value, limit, sense, detail }) => ({ id, label, passes: ok, value: +value.toFixed(3), limit, sense, detail })) },
         levels: d.floors.map((f) => ({ level: f.level, rooms: [...f.rooms, ...f.terraces].map(({ id, type, label, x, y, w, h }) => ({ id, type, label, x, y, w, h, area: +(w * h).toFixed(2) })), openings: f.openings })),
       };
       download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), `${base}.json`); toast('Design data exported');
@@ -947,6 +1108,7 @@ if (qs.get('style') && STYLES[qs.get('style')]) state.brief.style = qs.get('styl
 if (['plan', 'split', '3d'].includes(qs.get('view'))) state.view = qs.get('view');
 if (['exterior', 'section'].includes(qs.get('mode'))) state.mode3d = qs.get('mode');
 if (qs.get('step')) state.step = Math.max(0, Math.min(5, +qs.get('step') - 1 || 0));
+if (['overview', 'rooms', 'scores', 'rules', 'materials'].includes(qs.get('tab'))) state.tab = qs.get('tab');
 if (['dark', 'light'].includes(qs.get('theme'))) store.set('parametra.theme', qs.get('theme'));
 
 state.heroDesign = recommend(presetBrief(HERO), 1).picks[0];

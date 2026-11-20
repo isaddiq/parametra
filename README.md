@@ -65,15 +65,41 @@ It also has a sun-position slider tied to the plot's orientation and hemisphere,
 - **PNG** image of the 3D view.
 - **JSON** design data.
 
-Deep links: `?preset=villa#/studio`, `?style=japandi#/brief`, `?step=3#/brief`, `?view=plan#/studio`, `?theme=dark`.
+Deep links: `?preset=villa#/studio`, `?style=japandi#/brief`, `?step=3#/brief`, `?view=plan#/studio`, `?tab=rules#/studio`, `?theme=dark`.
 
 ## How designs are generated (`js/engine.js`)
 
 1. **Program.** The brief becomes rooms with preferred areas and width limits. Suites are grouped: master with walk-in and ensuite, kitchen with pantry, laundry with store.
-2. **Floors.** Public rooms go on the ground floor and bedrooms upstairs, with a bathroom on every bedroom floor. Flexible rooms then move between floors whenever that narrows the footprint.
-3. **Banded layout.** Each storey has a street band, a 1.2 m circulation spine and a garden band. Room widths are solved by weighted flex distribution. Spare length becomes storage or a roof terrace. The U-stair lines up on every level.
-4. **Derivation.** Walls come from classifying the edges between rooms as exterior, interior or open plan. Doors follow a parent graph. Windows follow style glazing ratios, room type and privacy settings. Furniture is placed per room with collision checks.
-5. **Scoring.** Nine criteria are weighted by your priority sliders: efficiency, proportions, daylight, solar orientation, functional flow, privacy, area match, site fit and build economy. Each brief explores 36–108 variants, and the four best distinct ones are shown.
+2. **Envelope.** The planning rules become hard caps before anything is laid out: buildable width and depth from the setbacks, maximum footprint from site coverage, maximum floor area from the floor area ratio.
+3. **Floors.** Public rooms go on the ground floor and bedrooms upstairs, with a bathroom on every bedroom floor. Flexible rooms then move between floors whenever that narrows the footprint.
+4. **Banded layout.** Each storey has a street band, a 1.2 m circulation spine and a garden band. Bands get shallower to fit the buildable depth. Free rooms are split between the bands by an exact branch and bound that minimises the longer band. Room widths along each band are solved exactly as a small quadratic program (see below), and are squeezed towards their minimums, never below, when the envelope is capped. Spare length becomes storage or a roof terrace. The U-stair lines up on every level.
+5. **Derivation.** Walls come from classifying the edges between rooms as exterior, interior or open plan. Doors follow a parent graph. Windows follow style glazing ratios, room type and privacy settings. Furniture is placed per room with collision checks.
+6. **Rule check.** Every layout is checked against 14 rules (below). A layout that breaks any of them is rejected, not scored lower.
+7. **Scoring.** Nine criteria are weighted by your priority sliders: efficiency, proportions, daylight, solar orientation, functional flow, privacy, area match, site fit and build economy. Each brief explores 36–108 variants, and the four best distinct compliant ones are shown.
+
+### Planning rules (`js/rules.js`)
+
+| Group              | Rule                                                                                                                       |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Planning           | Side setbacks, front and rear setbacks, site coverage, floor area ratio, building height, storeys, planted ground, parking |
+| Building standards | Ceiling height, minimum room sizes, daylight, stair geometry, corridor width, a door into every room                       |
+
+The brief's first step has three starting profiles (Suburban, Urban infill, Rural) with typical values. They are not any one city's code, and every value can be edited. Height is measured to the parapet on flat roofs and to the mid-point of the roof slope on pitched roofs. Daylight treats rooms that are open to each other as one space, and kitchens may use artificial light.
+
+**When nothing fits.** If no layout passes, the studio shows the closest designs, marked with the rules they break, and explains:
+
+- which rules no layout met, and the closest any layout came ("14.3 m wide, 11.0 m available");
+- what plot would pass, where the plot decides ("needs a plot at least 17.3 m wide");
+- changes to the brief that make it fit, such as "Leave out the garage". Each one is proved by regenerating the layouts and finding one that passes every rule. Single changes are tried first, cheapest first, then a beam search over up to four changes. The search runs in a Web Worker (`js/fixworker.js`), so the page stays responsive.
+
+### Exact solvers (`js/solver.js`)
+
+No solver library is needed, so the site stays static with no runtime dependencies:
+
+- **Room widths:** minimise Σ (wᵢ − pᵢ)² / fᵢ subject to Σ wᵢ = L and loᵢ ≤ wᵢ ≤ hiᵢ, where p is the preferred width and f the flexibility. The KKT conditions give wᵢ(λ) = clamp(pᵢ + λfᵢ, loᵢ, hiᵢ), and Σ wᵢ(λ) is piecewise linear, so the optimum is found exactly by walking its breakpoints. If Σ lo > L the band cannot fit, and the shortfall is exact.
+- **Band assignment:** branch and bound over every split of the free rooms, minimising the longer band, then the total.
+
+Both were checked against brute force on thousands of random cases.
 
 ## Files
 
@@ -81,8 +107,11 @@ Deep links: `?preset=villa#/studio`, `?style=japandi#/brief`, `?step=3#/brief`, 
 index.html            app shell, icon sprite, import map → vendor/three
 css/app.css           design tokens (light + dark), layout, components
 js/main.js            router, landing page, brief wizard, studio, exports
-js/data.js            room catalogue, styles, defaults
-js/engine.js          layout generator, walls/openings, scoring, recommender
+js/data.js            room catalogue, styles, rule profiles, room minimums, defaults
+js/engine.js          layout generator, walls/openings, scoring, recommender, fix search
+js/rules.js           planning rules: envelope caps, compliance check, diagnosis, fixes
+js/solver.js          exact band-width QP and band-assignment branch and bound
+js/fixworker.js       runs the fix search off the main thread
 js/furniture.js       furniture layout solver
 js/plan2d.js          SVG floor plans and thumbnails
 js/viewer3d.js        Three.js scene: building, roofs, stairs, site, modes, GLB
