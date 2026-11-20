@@ -75,7 +75,17 @@ Deep links: `?preset=villa#/studio`, `?style=japandi#/brief`, `?step=3#/brief`, 
 4. **Banded layout.** Each storey has a street band, a 1.2 m circulation spine and a garden band. Bands get shallower to fit the buildable depth. Free rooms are split between the bands by an exact branch and bound that minimises the longer band. Room widths along each band are solved exactly as a small quadratic program (see below), and are squeezed towards their minimums, never below, when the envelope is capped. Spare length becomes storage or a roof terrace. The U-stair lines up on every level.
 5. **Derivation.** Walls come from classifying the edges between rooms as exterior, interior or open plan. Doors follow a parent graph. Windows follow style glazing ratios, room type and privacy settings. Furniture is placed per room with collision checks.
 6. **Rule check.** Every layout is checked against 14 rules (below). A layout that breaks any of them is rejected, not scored lower.
-7. **Scoring.** Nine criteria are weighted by your priority sliders: efficiency, proportions, daylight, solar orientation, functional flow, privacy, area match, site fit and build economy. Each brief explores 36–108 variants, and the four best distinct compliant ones are shown.
+7. **Scoring.** Nine criteria are weighted by your priority sliders: efficiency, proportions, daylight, solar orientation, functional flow, privacy, area match, site fit and build economy. The four best distinct compliant designs are shown.
+
+### How many alternatives
+
+The search is adaptive (`search()` in `js/engine.js`):
+
+- **Stage 1**, every brief: band depths × stair position × mirror × kitchen side, 36 to 108 variants.
+- **Stage 2**, when stage 1 gives fewer than two compliant designs: compact variants, with every room at its smallest, over a wider range of band depths; and, with a garage, a narrow-lot layout with the garage in front of the service rooms instead of beside them, which saves up to 6.4 m of width. That is up to about 700 more variants. Stage 2 is skipped when every layout fails a rule only the brief can change (storeys, ceiling height, parking).
+- **Adjusted designs**: if nothing passes, the fix search (in the worker) also generates the designs for its two best tested changes. They lead the options, labelled "Adjusted: …", followed by the closest design as briefed, and one click makes the change part of the brief.
+
+Measured on 300 random briefs across the whole option space: 142 got four or more designs as briefed, and 102 more got buildable adjusted designs, so 81% in all, up from 43% before. The other 19% are mostly very large programs on small plots, and plots with less than about 9 to 10 m of buildable width. The banded layout needs living, dining and kitchen side by side, about 9.6 m at minimum sizes, so those need a narrow-lot layout type that is not built yet.
 
 ### Planning rules (`js/rules.js`)
 

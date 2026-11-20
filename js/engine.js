@@ -410,27 +410,35 @@ export function generateDesign(b, v, { furnish = true, caps = null } = {}) {
   let dB = r3(Math.round(v.dB * sizeK * 10) / 10);
   let dF = r3(Math.max(Math.round(v.dF * sizeK * 10) / 10, stairNeed));
   const garD = R.garage ? GARAGE_D : 0; // a garage deeper than the street band projects towards the street
+  // narrow-lot variant: the garage stands in front of the service rooms instead of beside them
+  const fwd = !!(v.garageFront && R.garage);
+  const frontDepth = () => (fwd ? GARAGE_D + dF : Math.max(dF, garD));
   if (caps) {
-    let over = Math.max(dF, garD) + CORR + dB - caps.D;
+    let over = frontDepth() + CORR + dB - caps.D;
     if (over > 1e-6) { const t = Math.min(over, Math.max(0, dB - DB_MIN)); dB = r3(dB - t); over -= t; }
-    if (over > 1e-6 && dF > garD) { const t = Math.min(over, Math.max(0, dF - Math.max(DF_MIN, stairNeed, garD))); dF = r3(dF - t); }
+    if (over > 1e-6 && (fwd || dF > garD)) { const t = Math.min(over, Math.max(0, dF - Math.max(DF_MIN, stairNeed, garD))); dF = r3(dF - t); }
   }
   const D = r3(dF + CORR + dB);
 
   const progRooms = [R.foyer, R.living, R.dining, R.kitchen, R.pantry, R.family, R.powder, R.laundry, R.storage, R.study, R.gym, R.media, R.guest, R.master, R.ensuite, R.wic, ...R.bedrooms, ...R.baths].filter(Boolean);
   const baseSum = sum(progRooms.map((r) => r.area));
   const stairArea = F > 1 ? STAIR_W * dF * F : 0;
-  const scale = clamp((b.area * 0.8 - stairArea) / baseSum, 0.72, 1.8);
+  // a compact variant holds every room at its smallest and the envelope at its narrowest
+  const scale = v.compact ? 0.72 : clamp((b.area * 0.8 - stairArea) / baseSum, 0.72, 1.8);
 
   const Wt = b.area / (F * D);
   let Wcap = Infinity;
   if (caps) {
     const garW = R.garage ? (R.garage.cars > 1 ? 6.4 : 3.8) : 0;
-    const garA = garW * Math.max(dF, garD);
-    const wLot = caps.widthAt ? caps.widthAt(Math.max(dF, garD) + CORR + dB) : caps.W; // a drawn lot: widest fit at this depth
-    Wcap = Math.min(wLot, (caps.footprint - garW * Math.max(0, garD - dF)) / D, (caps.gross + garA) / (F * D));
+    const garA = fwd ? 0 : garW * Math.max(dF, garD);      // garage area inside W × D
+    const garOut = fwd ? garW * GARAGE_D : garW * Math.max(0, garD - dF); // garage area outside it
+    const wLot = caps.widthAt ? caps.widthAt(frontDepth() + CORR + dB) : caps.W; // a drawn lot: widest fit at this depth
+    Wcap = Math.min(wLot, (caps.footprint - garOut) / D, (caps.gross + garA) / (F * D));
   }
+  if (v.compact) Wcap = 0;
   const { G, U } = assignProgram(b, R, F, v);
+  const garWf = fwd ? (R.garage.cars > 1 ? 6.4 : 3.8) : 0;
+  if (fwd) G.splice(G.findIndex((it) => it.key === 'garage'), 1);
   rebalanceFloors(G, U, dF, dB, scale);
   let gB = balance(G, dF, dB, scale, Math.min(Wt, Wcap));
   if (Math.max(gB.lf, gB.lb) > Wcap) gB = balance(G, dF, dB, scale, 0, true); // cap binds: narrowest split at minimum widths
@@ -443,6 +451,7 @@ export function generateDesign(b, v, { furnish = true, caps = null } = {}) {
     const gMin = Math.max(sum(gB.front.map((i) => itemMin(i, dF, scale))), sum(gB.back.map((i) => itemMin(i, dB, scale))));
     W = r3(Math.max(Wcap, gMin, ...upperMin));
   }
+  if (fwd) W = r3(Math.max(W, garWf + 2.2)); // the front door needs street frontage beside the garage
 
   let floors, overflow, sx = 0;
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -458,6 +467,14 @@ export function generateDesign(b, v, { furnish = true, caps = null } = {}) {
     g.push({ ...room('hall', { label: F > 1 ? 'Hall' : 'Gallery' }), x: 0, y: dF, w: W, h: CORR, band: 'spine', floor: 0 });
     const st = g.find((r) => r.type === 'stair');
     sx = st ? st.x : 0;
+    if (fwd) {
+      // in front of whichever end leaves the entry at least 1.4 m of street wall
+      const foy = g.find((r) => r.type === 'foyer');
+      const clearL = foy.x + foy.w - garWf, clearR = W - garWf - foy.x;
+      const gx = clearL >= 1.4 ? 0 : clearR >= 1.4 ? W - garWf : null;
+      if (gx === null) throw new Error('forward garage would block the entry');
+      g.push({ ...R.garage, x: r3(gx), y: -GARAGE_D, w: garWf, h: GARAGE_D, band: 'front', floor: 0 });
+    }
     floors.push({ level: 0, rooms: g });
 
     // ── upper floors
@@ -523,7 +540,7 @@ export function generateDesign(b, v, { furnish = true, caps = null } = {}) {
   if (v.mirror) for (const f of floors) for (const r of f.rooms) r.x = r3(W - r.x - r.w);
 
   const design = {
-    id: `v-${v.dB}-${v.dF}-${v.stair}-${v.mirror ? 1 : 0}-${v.kitchenFront ? 1 : 0}`,
+    id: `v-${v.dB}-${v.dF}-${v.stair}-${v.mirror ? 1 : 0}-${v.kitchenFront ? 1 : 0}${v.compact ? '-c' : ''}${fwd ? '-g' : ''}`,
     variant: v, brief: b, style, styleKey: b.style, W, D, dF, dB, H, ceiling: b.ceiling, nFloors: F, overflow,
     floors: [],
   };
@@ -592,6 +609,7 @@ function processFloor(f, d) {
   const interior = (r, p, w, kind = 'door') => {
     const seg = shared(r, p, 0.75);
     if (!seg) return false;
+    if (openings.some((o) => o.kind !== 'window' && ((o.a === r.id && o.b === p.id) || (o.a === p.id && o.b === r.id)))) return true; // already connected
     const pv = seg.axis === 'h' ? pivotX : pivotY;
     const pd = placeDoor(seg, w, pv);
     addOpening(seg, pd.s, pd.w, kind, r, p, { into: r.id, hinge: pd.hinge });
@@ -605,7 +623,8 @@ function processFloor(f, d) {
     let ok = parent ? interior(r, parent, doorW(r.type)) : false;
     if (!ok && hall && parent !== hall && !isOpen(r, hall)) ok = interior(r, hall, doorW(r.type));
     if (!ok) {
-      const alt = rooms.find((q) => q !== r && ['hall', 'foyer', 'living', 'dining', 'family', 'flex', 'kitchen'].includes(q.type) && shared(r, q, 0.75));
+      const via = ['hall', 'foyer', 'living', 'dining', 'family', 'flex', 'kitchen', ...(r.type === 'garage' ? ['laundry', 'storage', 'stair'] : [])];
+      const alt = rooms.find((q) => q !== r && via.includes(q.type) && shared(r, q, 0.75));
       if (alt && !isOpen(r, alt)) interior(r, alt, doorW(r.type));
       r.unreachable = !alt;
     }
@@ -972,21 +991,59 @@ export function describe(d) {
 }
 
 // ── Variant search & recommendation ─────────────────────────
-/** Generate every variant of the parameter grid inside the rule envelope. */
-function sweep(b, { mirror = true, stopAtFirst = false } = {}) {
+// Band depths (m, before scaling by house size). Stage 1 is the everyday grid; stage 2 widens it
+// with deeper bands (narrower houses for narrow plots) and shallower ones (lower pitched roofs,
+// shallow plots), plus compact variants with every room at its smallest.
+const DEPTHS = {
+  1: (b) => ({ dB: [4.4, 5.0, 5.6], dF: b.garage ? [4.0, 4.6, 5.2] : [3.8, 4.4, 5.0] }),
+  2: (b) => ({ dB: [3.6, 4.0, 4.4, 5.0, 5.6, 6.8], dF: b.garage ? [3.4, 4.0, 4.6, 5.2] : [3.2, 3.8, 4.4, 5.0] }),
+};
+/**
+ * The variants of one search stage. Stage 1: band depths × stair position × mirror × kitchen side.
+ * Stage 2: compact variants (every room at its smallest) over a wider depth range, and, with a
+ * garage, the narrow-lot layout with the garage in front of the service rooms.
+ */
+function variants(b, stage, mirror = true) {
   const F = clamp(Math.round(b.floors), 1, 3);
-  const caps = envelope(b);
-  const dBs = [4.4, 5.0, 5.6];
-  const dFs = b.garage ? [4.0, 4.6, 5.2] : [3.8, 4.4, 5.0];
-  const stairs = F > 1 ? [0, 1, 2] : [0];
   const out = [];
-  for (const dB of dBs) for (const dF of dFs) for (const stair of stairs) for (const m of mirror ? [false, true] : [false]) for (const kitchenFront of [false, true]) {
+  const add = (dB, dF, compact, garageFront) => {
+    for (const stair of F > 1 ? [0, 1, 2] : [0]) for (const m of mirror ? [false, true] : [false]) for (const kitchenFront of [false, true]) out.push({ dB, dF, stair, mirror: m, kitchenFront, compact, garageFront });
+  };
+  const g1 = DEPTHS[1](b);
+  if (stage === 1) { for (const dB of g1.dB) for (const dF of g1.dF) add(dB, dF, false, false); return out; }
+  const g2 = DEPTHS[2](b);
+  for (const garageFront of b.garage ? [false, true] : [false]) {
+    for (const dB of g2.dB) for (const dF of g2.dF) add(dB, dF, true, garageFront);
+    if (garageFront) for (const dB of g1.dB) for (const dF of g1.dF) add(dB, dF, false, true);
+  }
+  return out;
+}
+
+/** Generate the variants of a search stage inside the rule envelope. */
+function sweep(b, { stage = 1, mirror = true, stopAtFirst = false } = {}) {
+  const caps = envelope(b);
+  const out = [];
+  for (const v of variants(b, stage, mirror)) {
     let d;
-    try { d = generateDesign(b, { dB, dF, stair, mirror: m, kitchenFront }, { furnish: false, caps }); } catch (e) { console.warn('variant failed', e); continue; }
+    try { d = generateDesign(b, v, { furnish: false, caps }); } catch (e) { console.warn('variant failed', e); continue; }
     out.push(d);
     if (stopAtFirst && d.compliance.ok) return out;
   }
   return out;
+}
+
+const FIXED_BY_BRIEF = ['storeys', 'ceiling', 'parking']; // rules no layout can change
+const MIN_DESIGNS = 2;
+/**
+ * Adaptive search: the everyday grid first; if it yields fewer than MIN_DESIGNS compliant designs,
+ * the wider grid too, unless every layout fails a rule only the brief can change.
+ */
+function search(b, { mirror = true, stopAtFirst = false } = {}) {
+  const first = sweep(b, { stage: 1, mirror, stopAtFirst });
+  const ok = first.filter((d) => d.compliance.ok).length;
+  if (ok >= (stopAtFirst ? 1 : MIN_DESIGNS)) return { cands: first, stages: 1 };
+  if (first.length && first.every((d) => d.compliance.failed.some((f) => FIXED_BY_BRIEF.includes(f.id)))) return { cands: first, stages: 1 };
+  return { cands: [...first, ...sweep(b, { stage: 2, mirror, stopAtFirst })], stages: 2 };
 }
 
 /** Drop geometric duplicates: different parameters can converge on the same plan. */
@@ -1006,7 +1063,8 @@ const byScore = (p, q) => q.metrics.score - p.metrics.score || p.metrics.gross -
  * `report` explains which rules no layout met (fixes come from findFixes()).
  */
 export function recommend(b, count = 4) {
-  const all = dedupe(sweep(b));
+  const { cands: raw, stages } = search(b);
+  const all = dedupe(raw);
   const ok = all.filter((d) => d.compliance.ok);
   const feasible = ok.length > 0;
   const cands = feasible ? ok.sort(byScore) : [...all].sort((p, q) => p.compliance.violation - q.compliance.violation || byScore(p, q));
@@ -1025,7 +1083,7 @@ export function recommend(b, count = 4) {
   });
   const dg = diagnose(all, b);
   const report = {
-    feasible, explored: all.length, compliant: ok.length, rejected: all.length - ok.length,
+    feasible, explored: all.length, stages, compliant: ok.length, rejected: all.length - ok.length,
     reasons: dg.reasons, blocking: feasible ? [] : dg.blocking,
     closest: feasible ? [] : picks[0]?.compliance.failed.map((f) => ({ id: f.id, label: f.label, detail: f.detail })) || [],
     rules: picks[0]?.compliance.items.length || 0, profile: picks[0]?.compliance.profile || '',
@@ -1039,14 +1097,14 @@ export function recommend(b, count = 4) {
  * tried first, cheapest first; if none works, the four closest briefs are extended (a beam
  * search, up to four changes). Returns up to `limit` fixes: { label, steps, patch, score, gross }.
  */
-export function findFixes(b, { budget = 2500, limit = 3 } = {}) {
+export function findFixes(b, { budget = 4000, limit = 3 } = {}) {
   const t0 = Date.now();
   const key = (x) => JSON.stringify(x);
   const closestFailed = (ds) => [...new Set([...ds].sort((p, q) => p.compliance.violation - q.compliance.violation).slice(0, 6).flatMap((d) => d.compliance.failed.map((f) => f.id)))];
   const minV = (ds) => Math.min(...ds.map((d) => d.compliance.violation));
   const seen = new Set([key(b)]);
   const found = [];
-  let frontier = [{ b, steps: [], failed: closestFailed(sweep(b, { mirror: false })) }];
+  let frontier = [{ b, steps: [], failed: closestFailed(search(b, { mirror: false }).cands) }];
   search: for (let depth = 0; depth < 4 && !found.length && frontier.length; depth++) {
     const next = [];
     for (const node of frontier) {
@@ -1056,7 +1114,7 @@ export function findFixes(b, { budget = 2500, limit = 3 } = {}) {
         const k = key(nb);
         if (seen.has(k)) continue;
         seen.add(k);
-        const ds = sweep(nb, { mirror: false, stopAtFirst: true });
+        const ds = search(nb, { mirror: false, stopAtFirst: true }).cands;
         const steps = [...node.steps, fx];
         if (ds.some((d) => d.compliance.ok)) found.push({ steps, brief: nb });
         else next.push({ b: nb, steps, failed: closestFailed(ds), v: minV(ds) });
@@ -1070,10 +1128,18 @@ export function findFixes(b, { budget = 2500, limit = 3 } = {}) {
     const patch = Object.fromEntries(Object.entries(Object.assign({}, ...f.steps.map((s) => s.patch))).filter(([k, v]) => b[k] !== v));
     return { f, patch, key: key(patch) };
   }).filter((x) => !done.has(x.key) && done.add(x.key)).slice(0, limit).map(({ f, patch }) => {
-    const best = dedupe(sweep(f.brief)).filter((d) => d.compliance.ok).sort(byScore)[0];
+    const best = dedupe(search(f.brief).cands).filter((d) => d.compliance.ok).sort(byScore)[0];
     const steps = describePatch(b, patch);
     return { label: steps.join(' and '), steps, patch, score: best?.metrics.score ?? null, gross: best?.metrics.gross ?? null };
   });
+}
+
+/**
+ * Buildable designs for a brief that cannot be met as written: the best designs of the top two
+ * tested fixes, each marked with the fix it applies. [{ fix, picks }]
+ */
+export function adjustedDesigns(b, fixes, perFix = 2) {
+  return fixes.slice(0, 2).map((f, i) => ({ fix: i, picks: recommend({ ...b, ...f.patch }, perFix).picks.filter((d) => d.compliance.ok) })).filter((x) => x.picks.length);
 }
 
 function tagsFor(d) {

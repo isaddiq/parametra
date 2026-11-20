@@ -5,8 +5,8 @@
 //    #/brief   six-step guided brief with live preview
 //    #/studio  compare designs, plan + 3D, details
 // ─────────────────────────────────────────────────────────────
-import { DEFAULT_BRIEF, STYLES, METRIC_INFO, ROOM_TYPES, RULE_PROFILES, DEFAULT_RULES, ZONING_KEYS, ROOM_MINIMUMS } from './data.js';
-import { recommend, findFixes, compass, scoreWeights } from './engine.js';
+import { DEFAULT_BRIEF, STYLES, METRIC_INFO, ROOM_TYPES, RULE_PROFILES, DEFAULT_RULES, ZONING_KEYS, ROOM_MINIMUMS, OPTION_NAMES } from './data.js';
+import { recommend, findFixes, adjustedDesigns, compass, scoreWeights } from './engine.js';
 import { envelope, profileKey, profileName, rulesOf, parking } from './rules.js';
 import { buildLot, lotCapacity, compassName } from './lot.js';
 import { renderPlan, renderThumb, renderSitePlan, PLAN_STYLE } from './plan2d.js';
@@ -623,7 +623,9 @@ function renderPreview() {
     ${titleblock([['Plot', b.lot ? `${b.lot.area} m² lot` : `${b.plotW} × ${b.plotD} m`], ['Floor area', `${b.area} m²`], ['Storeys', b.floors], ['Bedrooms', b.bedrooms], ['Bathrooms', b.bathrooms], ['Style', STYLES[b.style].name]], 'grid c3')}
     <div class="pv-foot">
       ${rulesStatus(1)}
-      <p>${state.report?.feasible === false
+      <p>${d.adjusted
+        ? `With one change (${esc(d.adjusted.label.toLowerCase())}), <b>${d.name}</b> is a ${d.metrics.gross} m² design that meets every rule, matching your priorities at <b>${d.metrics.score}/100</b>.`
+        : state.report?.feasible === false
         ? `The closest of <b>${state.explored} layouts</b> is <b>${d.name}</b>, a ${d.metrics.gross} m² design, but it breaks ${ruleCount(d)}.`
         : `The best of <b>${state.explored} layouts</b> so far is <b>${d.name}</b>, a ${d.metrics.gross} m² design that matches your priorities at <b>${d.metrics.score}/100</b>.`}</p>
       <button type="button" class="btn btn-primary btn-block" data-go-studio>See my designs</button>
@@ -738,7 +740,7 @@ function generate() {
     const res = recommend(state.brief, 4);
     state.picks = res.picks; state.explored = res.explored; state.ms = Math.round(performance.now() - t0);
     state.report = res.report;
-    state.idx = 0; state.design = state.picks[0]; state.sel = null;
+    state.idx = 0; state.design = state.picks[0]; state.sel = null; state.userPicked = false;
     requestFixes();
   } catch (err) {
     console.error(err);
@@ -757,22 +759,46 @@ function requestFixes() {
   if (state.report.feasible) { state.fixes = []; return; }
   state.fixes = null;
   const brief = JSON.parse(JSON.stringify(state.brief));
-  const done = (fixes) => { if (id !== fixSeq) return; fixBusy = false; state.fixes = fixes; renderFixState(); };
-  const inline = () => setTimeout(() => { if (id === fixSeq) done(findFixes(brief)); }, 60);
+  const done = (fixes, adjusted = []) => { if (id !== fixSeq) return; fixBusy = false; state.fixes = fixes; mergeAdjusted(adjusted); renderFixState(); };
+  const inline = () => setTimeout(() => { if (id !== fixSeq) return; const f = findFixes(brief); done(f, adjustedDesigns(brief, f)); }, 60);
   try {
     if (fixBusy && fixWorker) { fixWorker.terminate(); fixWorker = null; }
     if (!fixWorker) {
       fixWorker = new Worker(new URL('./fixworker.js', import.meta.url), { type: 'module' });
-      fixWorker.onmessage = (e) => { if (e.data.id === fixSeq) done(e.data.fixes); };
+      fixWorker.onmessage = (e) => { if (e.data.id === fixSeq) done(e.data.fixes, e.data.adjusted); };
       fixWorker.onerror = (e) => { console.warn('fix worker failed, searching on the main thread', e); e.preventDefault?.(); fixWorker?.terminate(); fixWorker = null; fixBusy = false; inline(); };
     }
     fixBusy = true;
     fixWorker.postMessage({ id, brief });
   } catch (err) { console.warn(err); inline(); }
 }
+/**
+ * A brief no layout can meet still gets buildable designs: those of the best tested fixes, marked
+ * "Adjusted", lead the options, followed by the closest design as briefed. The user's own pick
+ * is kept if they already chose one.
+ */
+function mergeAdjusted(adjusted) {
+  const extra = adjusted.flatMap(({ fix, picks }) => picks.map((d) => Object.assign(d, { adjusted: state.fixes[fix], fixIndex: fix }))).slice(0, 3);
+  if (!extra.length) return;
+  const asBriefed = state.picks.filter((d) => !d.adjusted).slice(0, 1);
+  const prev = state.design;
+  state.picks = [...extra, ...asBriefed];
+  const used = new Set();
+  state.picks.forEach((d, i) => {
+    d.letter = String.fromCharCode(65 + i);
+    if (used.has(d.name)) d.name = OPTION_NAMES.find((n) => !used.has(n)) || d.name;
+    used.add(d.name);
+  });
+  state.idx = state.userPicked ? Math.max(0, state.picks.indexOf(prev)) : 0;
+  state.design = state.picks[state.idx];
+  state.adjustedFresh = true;
+}
 function renderFixState() {
   if (state.route === 'brief') renderPreview();
-  if (state.route === 'studio') renderBanner();
+  if (state.route === 'studio') {
+    if (state.adjustedFresh) { state.adjustedFresh = false; renderStudio(); mountStudioViewer(true); }
+    else renderBanner();
+  }
 }
 function applyFix(i) {
   const fx = state.fixes?.[i]; if (!fx) return;
@@ -802,7 +828,8 @@ function renderStudio() {
   $('#options').innerHTML = state.picks.map((p, i) => {
     const bad = !p.compliance.ok;
     const nf = p.compliance.failed.length;
-    const tag = bad ? `<small class="bad">Breaks ${nf} rule${nf > 1 ? 's' : ''}</small>` : `<small class="${i === 0 ? 'best' : ''}">${i === 0 ? 'Best match' : `Option ${p.letter}`}</small>`;
+    const tag = p.adjusted ? `<small class="adj" title="Adjusted: ${esc(p.adjusted.label)}">Adjusted: ${esc(p.adjusted.label)}</small>`
+      : bad ? `<small class="bad">${state.picks.some((x) => x.adjusted) ? 'As briefed, breaks' : 'Breaks'} ${nf} rule${nf > 1 ? 's' : ''}</small>` : `<small class="${i === 0 ? 'best' : ''}">${i === 0 ? 'Best match' : `Option ${p.letter}`}</small>`;
     return `
     <button type="button" class="opt${bad ? ' fails' : ''}" role="tab" aria-selected="${i === state.idx}" data-opt="${i}">
       <span class="o-plan">${renderThumb(p)}</span>
@@ -820,9 +847,9 @@ function renderBanner() {
   el.hidden = false;
   el.innerHTML = `
     <div class="rb-why">${ic('warn')}<div>
-      <h2>None of the ${rep.explored} layouts meets your planning rules</h2>
+      <h2>None of the ${rep.explored} layouts meets your planning rules as briefed</h2>
       <ul>${blockingItems(rep)}</ul>
-      <p>The designs below are the closest. Each one is marked with the rules it breaks.</p>
+      <p>${state.picks.some((d) => d.adjusted) ? 'The first designs below each make one tested change so they meet every rule. The last is the closest design as briefed, marked with the rules it breaks.' : 'The designs below are the closest. Each one is marked with the rules it breaks.'}</p>
     </div></div>
     <div class="rb-fix"><h3>Changes that make it fit</h3>${fixList(3)}</div>`;
 }
@@ -935,7 +962,7 @@ function selectRoom(room) {
 function verdict(s) { return s >= 85 ? ['Strong fit for your brief', ''] : s >= 72 ? ['Good fit for your brief', ''] : ['Fair fit, with trade-offs', 'mid']; }
 function renderDetails() {
   const d = state.design, M = d.metrics, C = d.compliance;
-  const [vt, vc] = C.ok ? verdict(M.score) : [`Breaks ${ruleCount(d)}`, 'bad'];
+  const [vt, vc] = d.adjusted ? ['Changes your brief to fit the rules', 'adj'] : C.ok ? verdict(M.score) : [`Breaks ${ruleCount(d)}`, 'bad'];
   $('#detailsHead').innerHTML = `
     <div class="dh-top"><div><h2>${d.name}</h2><p>Option ${d.letter} of ${state.picks.length}, ${d.style.name}</p></div>
       <div class="score"><b>${M.score}</b><small>out of 100</small></div></div>
@@ -950,7 +977,8 @@ function renderTabs() {
     const cells = [['Floor area', `${M.gross} m²`], ['Living area', `${M.net} m²`], ['Footprint', `${M.footprint} m²`], ['Envelope', `${d.W.toFixed(1)} × ${d.D.toFixed(1)} m`], ['Height', `${(d.nFloors * d.H + (st.roof === 'flat' ? 0.5 : st.roof === 'float' ? 0.4 : 2)).toFixed(1)} m`], ['Garden', `${Math.round(M.gardenRatio * 100)}% of plot`]];
     if (M.garage) cells.push(['Garage', `${M.garage} m²`]);
     if (M.terrace) cells.push(['Terraces', `${M.terrace} m²`]);
-    html = `
+    const adj = d.adjusted ? `<div class="adj-note">${ic('edit')}<div><b>Adjusted to fit your planning rules</b><p>Your brief cannot be built on this plot as it stands. This design makes one tested change: <b>${esc(d.adjusted.label)}</b>.</p><button type="button" class="btn btn-sm" data-fix="${d.fixIndex}">Make this change to my brief</button></div></div>` : '';
+    html = `${adj}
       <div class="cost"><span>Estimated build cost</span><b>${money(M.costLow)} to ${money(M.costHigh)}</b></div>
       <div>${titleblock(cells, 'grid c2')}</div>
       <div><h3>Why this design works</h3><ul class="notes">${d.story.lines.map((l) => `<li>${ic('check')}<span>${l}</span></li>`).join('')}</ul></div>
@@ -1010,8 +1038,9 @@ function rulesTab(d) {
   return `
     <div class="rules-sum ${C.ok ? 'ok' : 'bad'}">
       <div class="rs-top">${ic(C.ok ? 'check' : 'warn')}<b>${C.ok ? `Meets all ${n} rules` : `Breaks ${C.failed.length} of ${n} rules`}</b><span>${C.profile}</span></div>
-      ${rep ? `<p>${rep.explored} layouts explored. ${rep.compliant ? `${rep.compliant} met every rule${rep.rejected ? ` and ${rep.rejected} were rejected` : ''}.` : 'None met every rule.'}</p>` : ''}
-      ${rej}
+      ${d.adjusted ? `<p>With one change to your brief: ${esc(d.adjusted.label)}. As briefed, none of the ${rep?.explored ?? ''} layouts met every rule.</p>`
+        : rep ? `<p>${rep.explored} layouts explored. ${rep.compliant ? `${rep.compliant} met every rule${rep.rejected ? ` and ${rep.rejected} were rejected` : ''}.` : 'None met every rule.'}</p>` : ''}
+      ${d.adjusted ? '' : rej}
     </div>
     <div><h3>Planning</h3><ul class="rule-list">${list('planning')}</ul></div>
     <div><h3>Building standards</h3><ul class="rule-list">${list('building')}</ul></div>
@@ -1090,10 +1119,11 @@ function set3DMode(m) {
   $('#pane3d').classList.toggle('walking', viewer.mode === 'walk');
 }
 function bindStudio() {
-  $('#options').addEventListener('click', (e) => { const o = e.target.closest('[data-opt]'); if (o) selectDesign(+o.dataset.opt); });
+  $('#options').addEventListener('click', (e) => { const o = e.target.closest('[data-opt]'); if (o) { state.userPicked = true; selectDesign(+o.dataset.opt); } });
   $('#options').addEventListener('keydown', (e) => {
     if (!['ArrowRight', 'ArrowLeft'].includes(e.key)) return;
     const n = (state.idx + (e.key === 'ArrowRight' ? 1 : -1) + state.picks.length) % state.picks.length;
+    state.userPicked = true;
     selectDesign(n); $$('.opt')[n].focus();
   });
   $('#viewSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-view]'); if (b) setView(b.dataset.view); });
