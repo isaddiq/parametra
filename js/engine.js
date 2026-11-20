@@ -14,7 +14,8 @@
 import { ROOM_TYPES, STYLES, HABITABLE, WET, BEDROOMS, OPTION_NAMES } from './data.js';
 import { furnishRoom } from './furniture.js';
 import { distribute, partition } from './solver.js';
-import { envelope, checkDesign, diagnose, candidateFixes, describePatch } from './rules.js';
+import { envelope, checkDesign, diagnose, candidateFixes, describePatch, plotArea } from './rules.js';
+import { rectInPoly } from './lot.js';
 
 export const CORR = 1.2;       // spine width
 export const STAIR_W = 2.6;    // U-stair slot width
@@ -426,7 +427,8 @@ export function generateDesign(b, v, { furnish = true, caps = null } = {}) {
   if (caps) {
     const garW = R.garage ? (R.garage.cars > 1 ? 6.4 : 3.8) : 0;
     const garA = garW * Math.max(dF, garD);
-    Wcap = Math.min(caps.W, (caps.footprint - garW * Math.max(0, garD - dF)) / D, (caps.gross + garA) / (F * D));
+    const wLot = caps.widthAt ? caps.widthAt(Math.max(dF, garD) + CORR + dB) : caps.W; // a drawn lot: widest fit at this depth
+    Wcap = Math.min(wLot, (caps.footprint - garW * Math.max(0, garD - dF)) / D, (caps.gross + garA) / (F * D));
   }
   const { G, U } = assignProgram(b, R, F, v);
   rebalanceFloors(G, U, dF, dB, scale);
@@ -730,31 +732,45 @@ function computeSite(d) {
   const gar = g.rooms.find((r) => r.type === 'garage');
   const prot = gar ? Math.max(0, -gar.y) : 0;
   const bw = b.plotW - 2 * b.setSide;
-  const ox = r3(clamp((b.plotW - d.W) / 2, Math.min(b.setSide, (b.plotW - d.W) / 2), b.plotW));
-  const oy = r3(b.setFront + prot);
+  let ox = r3(clamp((b.plotW - d.W) / 2, Math.min(b.setSide, (b.plotW - d.W) / 2), b.plotW));
+  let oy = r3(b.setFront + prot);
+  let fitsW = d.W <= bw + 0.01;
+  let fitsD = d.D + prot <= b.plotD - b.setFront - b.setRear + 0.01;
+  // a drawn lot: put the footprint (garage included) where it fits, nearest the street
+  const poly = b.lot?.poly || null;
+  if (poly) {
+    const at = envelope(b).place(d.W, d.D + prot);
+    fitsW = fitsD = !!at;
+    if (at) { ox = r3(at.x); oy = r3(at.y + prot); }
+  }
+  // outdoor areas on a drawn lot must stay inside the boundary (with a 0.5 m margin)
+  const inLot = (x, y, w, h) => !poly || rectInPoly(x + ox - 0.5, y + oy - 0.5, w + 1, h + 1, poly);
   const rear = b.plotD - oy - d.D;
-  const fitsW = d.W <= bw + 0.01;
-  const fitsD = d.D + prot <= b.plotD - b.setFront - b.setRear + 0.01;
   // patio behind garden rooms
   let patio = null;
   const gardenRooms = g.rooms.filter((r) => r.gardenDoor);
   if (b.terrace && gardenRooms.length && rear > 3) {
     const x0 = Math.min(...gardenRooms.map((r) => r.x)), x1 = Math.max(...gardenRooms.map((r) => r.x + r.w));
-    patio = { x: r3(x0), y: d.D, w: r3(x1 - x0), h: r3(Math.min(3.4, rear - 1)) };
+    let ph = Math.min(3.4, rear - 1);
+    while (ph >= 1.8 && !inLot(x0, d.D, x1 - x0, ph)) ph -= 0.4;
+    if (ph >= 1.8) patio = { x: r3(x0), y: d.D, w: r3(x1 - x0), h: r3(ph) };
   }
   let pool = null;
   const py = d.D + (patio ? patio.h : 0) + 1.4;
   if (b.pool && b.plotD - oy - py > 4.6) {
     const pw = Math.min(10, d.W * 0.7, b.plotW - 3);
-    const ph = Math.min(4, b.plotD - oy - py - 1.2);
+    let ph = Math.min(4, b.plotD - oy - py - 1.2);
     const cx = patio ? patio.x + patio.w / 2 : d.W / 2;
-    let px = clamp(cx - pw / 2, -ox + 1, -ox + b.plotW - 1 - pw);
-    pool = { x: r3(px), y: r3(py), w: r3(pw), h: r3(ph) };
+    const px = clamp(cx - pw / 2, -ox + 1, -ox + b.plotW - 1 - pw);
+    while (ph >= 2.4 && !inLot(px, py, pw, ph)) ph -= 0.4;
+    if (ph >= 2.4) pool = { x: r3(px), y: r3(py), w: r3(pw), h: r3(ph) };
   }
   const driveway = gar ? { x: gar.x + 0.2, y: -oy, w: gar.w - 0.4, h: oy + gar.y } : null;
   const foy = g.rooms.find((r) => r.type === 'foyer');
   const path = foy ? { x: foy.x + foy.w / 2 - 0.7, y: -oy, w: 1.4, h: oy } : null;
-  return { plotW: b.plotW, plotD: b.plotD, ox, oy, prot, rear, fitsW, fitsD, overW: d.W - bw, patio, pool, driveway, path };
+  // the lot boundary in house coordinates (a drawn polygon, or the plot rectangle)
+  const lot = (poly || [[0, 0], [b.plotW, 0], [b.plotW, b.plotD], [0, b.plotD]]).map(([x, y]) => [r3(x - ox), r3(y - oy)]);
+  return { plotW: b.plotW, plotD: b.plotD, ox, oy, prot, rear, fitsW, fitsD, overW: d.W - bw, patio, pool, driveway, path, lot, drawn: !!poly, front: poly ? b.lot.front : 0 };
 }
 
 // ── Furniture ───────────────────────────────────────────────
@@ -878,7 +894,7 @@ function computeMetrics(d) {
   M.areaFit = clamp(100 - (Math.abs(gross - b.area) / b.area) * 260, 0, 100);
 
   // site
-  const plotA = b.plotW * b.plotD;
+  const plotA = plotArea(b);
   const fp = sum(d.floors[0].rooms.map(area));
   const s = d.site;
   const hard = (s.driveway ? s.driveway.w * s.driveway.h : 0) + (s.patio ? s.patio.w * s.patio.h : 0) + (s.pool ? s.pool.w * s.pool.h : 0);

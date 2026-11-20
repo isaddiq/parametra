@@ -12,6 +12,7 @@
 //                 only offers one after a regenerated layout passes.
 // ─────────────────────────────────────────────────────────────
 import { RULE_PROFILES, ZONING_KEYS, DEFAULT_RULES, ROOM_MINIMUMS, HABITABLE } from './data.js';
+import { lotCapacity } from './lot.js';
 
 const PLINTH = 0.15;          // ground to ground-floor level, as built in 3D
 const DEG = Math.PI / 180;
@@ -32,9 +33,21 @@ export function profileKey(r) {
 }
 export function profileName(r) { const k = profileKey(r); return k === 'custom' ? 'Custom rules' : `${RULE_PROFILES[k].name} rules`; }
 
-/** Buildable box and zoning caps for a brief. */
+/** Plot area: the drawn lot's true area, or width × depth. */
+export const plotArea = (b) => (b.lot?.poly ? b.lot.area : b.plotW * b.plotD);
+const MIN_HOUSE_W = 6; // a band narrower than this cannot hold the program
+
+/**
+ * Buildable envelope and zoning caps for a brief. For a rectangular plot, a box inside the
+ * setbacks. For a drawn lot, `widthAt(depth)` gives the widest footprint that fits at that
+ * depth and `place(w, d)` where it goes; W and D are the widest and deepest usable extents.
+ */
 export function envelope(b, r = rulesOf(b)) {
-  const plotA = b.plotW * b.plotD;
+  const plotA = plotArea(b);
+  if (b.lot?.poly) {
+    const cap = lotCapacity(b.lot, { front: b.setFront, side: b.setSide, rear: b.setRear });
+    return { plotA, lot: true, cap, W: cap.maxW, D: cap.maxDepth(MIN_HOUSE_W), widthAt: cap.widthAt, place: cap.place, footprint: Math.min(cap.area, (r.coverage / 100) * plotA), gross: r.far * plotA };
+  }
   const W = Math.max(0, b.plotW - 2 * b.setSide);
   const D = Math.max(0, b.plotD - b.setFront - b.setRear);
   return { plotA, W, D, footprint: Math.min(W * D, (r.coverage / 100) * plotA), gross: r.far * plotA };
@@ -83,6 +96,7 @@ function daylightSpaces(f) {
 }
 
 const RULES = {
+  setbacks: { group: 'planning', label: 'Setbacks', desc: 'The house, garage included, fits inside the drawn lot, less the front, side and rear setbacks.' },
   'setback-side': { group: 'planning', label: 'Side setbacks', desc: 'The house fits between the side boundaries, less the side setbacks.' },
   'setback-depth': { group: 'planning', label: 'Front and rear setbacks', desc: 'The house fits between the front and rear setbacks, garage included.' },
   coverage: { group: 'planning', label: 'Site coverage', desc: 'Share of the plot covered by the ground floor, garage included.' },
@@ -111,8 +125,15 @@ export function checkDesign(d) {
   };
 
   // zoning
-  add('setback-side', d.W, env.W, 'max', `${f1(d.W)} m wide, ${f1(env.W)} m available`);
-  add('setback-depth', d.D + s.prot, env.D, 'max', `${f1(d.D + s.prot)} m deep, ${f1(env.D)} m available`);
+  if (env.lot) {
+    const Dt = d.D + s.prot, wmax = env.widthAt(Dt);
+    add('setbacks', d.W, wmax, 'max', wmax > 0
+      ? `${f1(d.W)} × ${f1(Dt)} m footprint; at that depth the lot fits ${f1(wmax)} m`
+      : `${f1(d.W)} × ${f1(Dt)} m footprint; the lot is not ${f1(Dt)} m deep inside the setbacks`);
+  } else {
+    add('setback-side', d.W, env.W, 'max', `${f1(d.W)} m wide, ${f1(env.W)} m available`);
+    add('setback-depth', d.D + s.prot, env.D, 'max', `${f1(d.D + s.prot)} m deep, ${f1(env.D)} m available`);
+  }
   const cov = (M.footprint / env.plotA) * 100;
   add('coverage', cov, r.coverage, 'max', `${Math.round(cov)}% of the plot, ${r.coverage}% allowed`);
   const far = M.gross / env.plotA;
@@ -177,7 +198,8 @@ export function diagnose(cands, b) {
 const lower = (s) => s.charAt(0).toLowerCase() + s.slice(1);
 function siteHint(e, b) {
   if (!b) return null;
-  const v = e.best.value, plotA = b.plotW * b.plotD;
+  const v = e.best.value, plotA = plotArea(b);
+  if (e.id === 'setbacks') return 'The drawn lot is too small or narrow for this brief inside its setbacks.';
   if (e.id === 'setback-side') { const side = (b.plotW - v) / 2; return `It needs a plot at least ${f1(v + 2 * b.setSide)} m wide${side >= 0.5 ? `, or side setbacks of ${f1(side)} m` : ''}.`; }
   if (e.id === 'setback-depth') return `It needs a plot at least ${f1(v + b.setFront + b.setRear)} m deep.`;
   if (e.id === 'coverage' || e.id === 'far') return `It needs a plot of at least ${Math.ceil((plotA * v) / e.best.limit)} m² under these rules.`;
@@ -187,7 +209,7 @@ function siteHint(e, b) {
 // ── Fixes ─────────────────────────────────────────────────────
 // Each is a change to the brief. `when` limits it to briefs where it can apply
 // and to the rules it could plausibly cure; `cost` orders fixes by disruption.
-const SPACE = ['setback-side', 'setback-depth', 'coverage', 'far', 'garden', 'room-size', 'daylight', 'access'];
+const SPACE = ['setbacks', 'setback-side', 'setback-depth', 'coverage', 'far', 'garden', 'room-size', 'daylight', 'access'];
 const ROOMS = [['gym', 'the home gym', 2], ['media', 'the media room', 2], ['family', 'the family room', 3], ['guest', 'the guest suite', 3], ['study', 'the study', 3], ['pantry', 'the pantry', 1], ['powder', 'the powder room', 1], ['storage', 'the storage room', 1], ['walkIn', 'the walk-in closet', 1], ['laundry', 'the laundry', 2]];
 export const FIXES = [
   { id: 'floors-up', cost: 2, cures: SPACE, when: (b, r) => b.floors < Math.min(3, r.storeys), patch: (b) => ({ floors: b.floors + 1 }), label: (b) => `Build ${b.floors + 1} storeys instead of ${b.floors}` },

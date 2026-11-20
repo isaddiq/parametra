@@ -8,7 +8,8 @@
 import { DEFAULT_BRIEF, STYLES, METRIC_INFO, ROOM_TYPES, RULE_PROFILES, DEFAULT_RULES, ZONING_KEYS, ROOM_MINIMUMS } from './data.js';
 import { recommend, findFixes, compass, scoreWeights } from './engine.js';
 import { envelope, profileKey, profileName, rulesOf, parking } from './rules.js';
-import { renderPlan, renderThumb, PLAN_STYLE } from './plan2d.js';
+import { buildLot, lotCapacity, compassName } from './lot.js';
+import { renderPlan, renderThumb, renderSitePlan, PLAN_STYLE } from './plan2d.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -17,6 +18,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
 };
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (v) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 }).format(v);
 const pct = (v, min, max) => `${((v - min) / (max - min)) * 100}%`;
 const DIR_NAME = { N: 'north', E: 'east', S: 'south', W: 'west' };
@@ -100,9 +102,13 @@ const state = {
   sel: null, hover: null, route: 'home',
   heroDesign: null,
   report: null, fixes: null, // fixes: null while the search runs, [] when none is needed or found
+  plotMode: 'dims',          // 'dims' (typed width × depth) or 'map' (drawn lot)
+  mapStatus: ['', ''],
 };
 state.brief.pri = { ...DEFAULT_BRIEF.pri, ...(state.brief.pri || {}) };
 state.brief.rules = { ...DEFAULT_RULES, ...(state.brief.rules || {}) };
+if (!state.brief.lot?.poly) state.brief.lot = null;
+state.plotMode = state.brief.lot ? 'map' : 'dims';
 if (!STYLES[state.brief.style]) state.brief.style = 'modern';
 let viewer = null;
 
@@ -321,8 +327,24 @@ function stepperCard(k, label, sub, min, max) {
     <button type="button" data-step="${k}" data-d="1" data-min="${min}" data-max="${max}" aria-label="More ${label.toLowerCase()}" ${v >= max ? 'disabled' : ''}>${ic('plus', '')}</button></div></div>`;
 }
 
+/** The drawn lot, street at the bottom, with the largest footprint that fits inside the setbacks. */
+function lotDiagram() {
+  const b = state.brief, lot = b.lot;
+  const k = Math.min(180 / lot.plotW, 190 / lot.plotD);
+  const w = lot.plotW * k, h = lot.plotD * k, x = (220 - w) / 2, y = 4;
+  const P = ([px, py]) => `${(x + px * k).toFixed(1)},${(y + h - py * k).toFixed(1)}`;
+  const big = lotCapacity(lot, { front: b.setFront, side: b.setSide, rear: b.setRear }).largest;
+  const rect = big ? `<rect class="pd-build" x="${(x + big.x * k).toFixed(1)}" y="${(y + h - (big.y + big.h) * k).toFixed(1)}" width="${(big.w * k).toFixed(1)}" height="${(big.h * k).toFixed(1)}"/>` : '';
+  return `<svg class="plot-diagram" viewBox="0 0 220 ${h + 70}" role="img" aria-label="Lot of ${lot.area} square metres${big ? `, largest footprint inside the setbacks ${big.w.toFixed(1)} by ${big.h.toFixed(1)} metres` : ''}">
+    <polygon class="pd-plot" points="${lot.poly.map(P).join(' ')}"/>${rect}
+    <rect class="pd-street" x="${x - 10}" y="${y + h + 5}" width="${w + 20}" height="16" rx="3"/>
+    <text x="110" y="${y + h + 17}" text-anchor="middle">Street</text>
+    <text x="110" y="${y + h + 42}" text-anchor="middle">Lot ${lot.area} m²</text>
+    <text x="110" y="${y + h + 60}" text-anchor="middle" fill="var(--green)">${big ? `Largest footprint ${big.w.toFixed(1)} × ${big.h.toFixed(1)} m` : 'No room inside the setbacks'}</text></svg>`;
+}
 function plotDiagram() {
   const b = state.brief;
+  if (b.lot) return lotDiagram();
   const k = Math.min(180 / b.plotW, 190 / b.plotD);
   const w = b.plotW * k, h = b.plotD * k, x = (220 - w) / 2, y = 4;
   const bw = Math.max(0, b.plotW - 2 * b.setSide), bd = Math.max(0, b.plotD - b.setFront - b.setRear);
@@ -336,6 +358,10 @@ function plotDiagram() {
 }
 function orientText() {
   const b = state.brief;
+  if (b.lot) {
+    const g = (b.lot.bearing + 180) % 360;
+    return `<p>From your map: the street is to the <b>${compassName(b.lot.bearing)}</b> (${b.lot.bearing}°), so the garden faces <b>${compassName(g)}</b>. ${b.hemisphere === 'S' ? 'Southern' : 'Northern'} hemisphere. Sun studies use the nearest compass direction, ${DIR_NAME[b.street]}.</p>`;
+  }
   const rear = OPP[b.street];
   const sunny = b.hemisphere === 'S' ? 'N' : 'S';
   const good = rear === sunny ? 'That is the sunny side, so living rooms and the patio get the best light.' : rear === 'E' || rear === 'W' ? 'The garden gets sun for half the day, and living rooms will be placed to catch it.' : 'The garden faces away from the sun, so windows on the sides and front will do more of the work.';
@@ -372,20 +398,51 @@ function stepRules() {
     </div>`;
 }
 
-function stepSite() {
-  const b = state.brief;
+const PLOT_MODES = [['dims', 'Enter dimensions'], ['map', 'Find it on a map']];
+function mapBlock() {
+  const [msg, kind] = state.mapStatus;
   return `
-    <div class="group"><h2>Plot size</h2>
-      <div class="plot-wrap">
-        <div class="group">${rangeField('plotW', 'Width along the street', 8, 60, 0.5, 'm')}${rangeField('plotD', 'Depth from street to back', 15, 80, 0.5, 'm')}</div>
-        <div id="plotDiagram">${plotDiagram()}</div>
+    <div class="map-search" role="search">
+      <label class="sr" for="mapQ">Address</label>
+      <div class="box"><input id="mapQ" type="search" placeholder="Search an address (optional)" autocomplete="street-address" enterkeyhint="search"></div>
+      <button type="button" class="btn" data-map="search">Search</button>
+    </div>
+    <ul class="map-results" id="mapResults" hidden></ul>
+    <div class="lot-map-wrap">
+      <div class="lot-map" id="lotMap" aria-label="Map for drawing the lot boundary"><div class="map-loading"><span class="spin sm"></span>Loading map…</div></div>
+      <div class="map-bar" id="mapBar">
+        <button type="button" class="btn btn-sm btn-primary" data-map="draw">${state.brief.lot ? 'Redraw lot' : 'Draw lot'}</button>
+        <button type="button" class="btn btn-sm" data-map="undo" hidden>Undo corner</button>
+        <button type="button" class="btn btn-sm" data-map="finish" hidden>Finish</button>
+        <button type="button" class="btn btn-sm btn-ghost" data-map="clear" ${state.brief.lot ? '' : 'hidden'}>Clear</button>
+        <div class="seg seg-sm map-layer" role="group" aria-label="Map imagery"><button type="button" class="on" data-map-layer="satellite">Satellite</button><button type="button" data-map-layer="map">Map</button></div>
       </div>
     </div>
-    <div class="group"><h2>Setbacks</h2><p class="help">The minimum distance the house must keep from each boundary. Check your local planning rules.</p>
-      <div class="numbers">${[['setFront', 'Front'], ['setSide', 'Each side'], ['setRear', 'Rear']].map(([k, l]) => `<div class="num"><label for="n-${k}">${l}</label><div class="box"><input id="n-${k}" type="number" inputmode="decimal" min="0" max="20" step="0.5" data-k="${k}" value="${b[k]}"><span>m</span></div></div>`).join('')}</div>
-    </div>
-    ${stepRules()}
-    <div class="group"><h2>Orientation</h2><p class="help">Which side of the plot is the street on?</p>
+    <p class="map-status ${kind}" id="mapStatus" role="status">${msg || 'Search for an address or pan to your plot, then press Draw lot.'}</p>
+    <div id="lotFacts">${lotFacts()}</div>
+    <p class="help fine">Address search sends what you type to OpenStreetMap's Nominatim service. Imagery comes from Esri and OpenStreetMap, and the street side from OpenStreetMap road data. Your lot is saved only in this browser.</p>`;
+}
+function lotFacts() {
+  const b = state.brief, lot = b.lot;
+  if (!lot) return `<p class="empty-hint">No lot drawn yet. Until you draw one, designs use a ${b.plotW} × ${b.plotD} m plot.</p>`;
+  const cells = [['Lot area', `${lot.area} m²`], ['Street frontage', `${lot.frontage} m`], ['Depth', `${lot.plotD} m`], ['Street side', `${compassName(lot.bearing)}, ${lot.bearing}°`], ['Corners', lot.poly.length], ['Hemisphere', b.hemisphere === 'S' ? 'Southern' : 'Northern']];
+  return `<div class="plot-wrap lot-facts"><div>${titleblock(cells, 'grid c2')}${lot.address ? `<p class="help addr">${esc(lot.address)}</p>` : ''}</div><div id="plotDiagram">${plotDiagram()}</div></div>`;
+}
+function plotGroup() {
+  const map = state.plotMode === 'map';
+  return `
+    <div class="seg seg-wrap" role="radiogroup" aria-label="How to describe the plot" id="plotModeSeg">${PLOT_MODES.map(([k, l]) => `<button type="button" role="radio" aria-checked="${state.plotMode === k}" class="${state.plotMode === k ? 'on' : ''}" data-plot-mode="${k}">${l}</button>`).join('')}</div>
+    ${map ? mapBlock() : `
+    <p class="help">Type in the plot's size. Or, optionally, switch to the map and draw your lot: Parametra then reads its size, shape, street side and orientation.</p>
+    <div class="plot-wrap">
+      <div class="group">${rangeField('plotW', 'Width along the street', 8, 60, 0.5, 'm')}${rangeField('plotD', 'Depth from street to back', 15, 80, 0.5, 'm')}</div>
+      <div id="plotDiagram">${plotDiagram()}</div>
+    </div>`}`;
+}
+function orientGroup() {
+  const b = state.brief;
+  if (b.lot) return `<h2>Orientation</h2><div class="orient-text"><div id="orientText">${orientText()}</div></div>`;
+  return `<h2>Orientation</h2><p class="help">Which side of the plot is the street on?</p>
       <div class="orient">
         <div class="compass-pick" role="radiogroup" aria-label="Direction of the street">
           ${['N', 'E', 'S', 'W'].map((d) => `<button type="button" class="${d.toLowerCase()} ${b.street === d ? 'on' : ''}" role="radio" aria-checked="${b.street === d}" data-k="street" data-v="${d}" aria-label="Street to the ${DIR_NAME[d]}">${d}</button>`).join('')}
@@ -396,8 +453,19 @@ function stepSite() {
             <div class="seg" role="radiogroup">${[['N', 'Northern'], ['S', 'Southern']].map(([v, l]) => `<button type="button" role="radio" aria-checked="${b.hemisphere === v}" class="${b.hemisphere === v ? 'on' : ''}" data-k="hemisphere" data-v="${v}">${l}</button>`).join('')}</div>
           </div>
         </div>
-      </div>
-    </div>`;
+      </div>`;
+}
+const orientKey = () => (state.brief.lot ? `lot|${state.brief.lot.bearing}|${state.brief.hemisphere}` : 'dims');
+
+function stepSite() {
+  const b = state.brief;
+  return `
+    <div class="group" id="plotGroup"><h2>Plot</h2>${plotGroup()}</div>
+    <div class="group"><h2>Setbacks</h2><p class="help">The minimum distance the house must keep from each boundary. Check your local planning rules.</p>
+      <div class="numbers">${[['setFront', 'Front'], ['setSide', 'Each side'], ['setRear', 'Rear']].map(([k, l]) => `<div class="num"><label for="n-${k}">${l}</label><div class="box"><input id="n-${k}" type="number" inputmode="decimal" min="0" max="20" step="0.5" data-k="${k}" value="${b[k]}"><span>m</span></div></div>`).join('')}</div>
+    </div>
+    ${stepRules()}
+    <div class="group" id="orientGroup" data-key="${orientKey()}">${orientGroup()}</div>`;
 }
 function areaHint() {
   const b = state.brief, per = b.area / Math.max(1, b.bedrooms);
@@ -446,7 +514,92 @@ function stepPrio() {
       <input id="p-${k}" type="range" min="0" max="100" step="5" data-pri="${k}" value="${state.brief.pri[k]}" style="--p:${state.brief.pri[k]}%"></div>`).join('')}</div>`;
 }
 
+// ── lot on a map (optional) ─────────────────────────────────
+let mapCtl = null, mapSeq = 0;
+function setPlotMode(m) {
+  if (m === state.plotMode) return;
+  state.plotMode = m;
+  const b = state.brief;
+  if (m === 'dims' && b.lot) {
+    // back to typed dimensions: keep the drawn lot's overall size, within the slider ranges
+    b.lot = null;
+    b.plotW = Math.max(8, Math.min(60, Math.round(b.plotW * 2) / 2));
+    b.plotD = Math.max(15, Math.min(80, Math.round(b.plotD * 2) / 2));
+    changed();
+  }
+  unmountMap();
+  $('#plotGroup').innerHTML = `<h2>Plot</h2>${plotGroup()}`;
+  syncWizard();
+  if (m === 'map') mountMap();
+}
+async function mountMap() {
+  const el = $('#lotMap'); if (!el) return;
+  const seq = ++mapSeq;
+  try {
+    const { mountLotMap } = await import('./sitemap.js');
+    if (seq !== mapSeq || !el.isConnected) return;
+    el.innerHTML = '';
+    const ctl = await mountLotMap(el, { lot: state.brief.lot, onLot: applyLot, onStatus: setMapStatus, onMode: setMapMode });
+    if (seq !== mapSeq || !el.isConnected) { ctl.destroy(); return; }
+    mapCtl = ctl;
+  } catch (err) {
+    console.error(err);
+    setMapStatus('The map could not load. Check your connection, or switch to Enter dimensions.', 'bad');
+  }
+}
+function unmountMap() { mapSeq++; mapCtl?.destroy(); mapCtl = null; }
+function setMapStatus(text, kind = '') {
+  state.mapStatus = [text, kind];
+  const el = $('#mapStatus'); if (!el) return;
+  el.className = `map-status ${kind}`;
+  el.innerHTML = kind === 'busy' ? `<span class="spin sm"></span>${text}` : text;
+}
+function setMapMode(mode, corners) {
+  const bar = $('#mapBar'); if (!bar) return;
+  const drawing = mode === 'drawing';
+  bar.querySelector('[data-map="draw"]').hidden = drawing;
+  bar.querySelector('[data-map="draw"]').textContent = mode === 'done' ? 'Redraw lot' : 'Draw lot';
+  bar.querySelector('[data-map="undo"]').hidden = !drawing;
+  bar.querySelector('[data-map="undo"]').disabled = !corners;
+  bar.querySelector('[data-map="finish"]').hidden = !drawing;
+  bar.querySelector('[data-map="finish"]').disabled = corners < 3;
+  bar.querySelector('[data-map="clear"]').hidden = mode === 'idle';
+}
+async function mapAction(a) {
+  if (a === 'search') {
+    const q = $('#mapQ')?.value.trim(); if (!q) return;
+    setMapStatus('Searching…', 'busy');
+    try {
+      const { searchAddress } = await import('./sitemap.js');
+      const places = (state.places = await searchAddress(q));
+      const ul = $('#mapResults');
+      if (!places.length) { setMapStatus('No match for that address. Try adding the town or postcode, or pan the map yourself.', 'bad'); ul.hidden = true; return; }
+      if (places.length === 1 && mapCtl) { mapCtl.goTo(places[0]); ul.hidden = true; setMapStatus('Found it. Now press Draw lot and click each corner of the lot.'); return; }
+      ul.innerHTML = places.map((p, i) => `<li><button type="button" data-place="${i}">${esc(p.name)}</button></li>`).join('');
+      ul.hidden = false;
+      setMapStatus(`${places.length} matches. Pick one.`);
+    } catch (err) { console.warn(err); setMapStatus('Address search is unavailable right now. Pan and zoom the map to your plot instead.', 'bad'); }
+    return;
+  }
+  if (!mapCtl) return;
+  if (a === 'draw') mapCtl.startDraw();
+  if (a === 'undo') mapCtl.undo();
+  if (a === 'finish') mapCtl.finish();
+  if (a === 'clear') mapCtl.clear();
+}
+/** A lot from the map: rebuild it in plot coordinates and make it the brief's plot. */
+function applyLot(raw) {
+  const b = state.brief;
+  if (!raw) { if (b.lot) { b.lot = null; changed(); } return; }
+  const L = buildLot(raw.latlng, raw.front);
+  if (L.error) { setMapStatus(L.error, 'bad'); return; }
+  b.lot = { latlng: L.latlng, front: L.front, poly: L.poly, kinds: L.kinds, lengths: L.lengths, area: L.area, frontage: L.frontage, plotW: L.plotW, plotD: L.plotD, bearing: L.bearing, center: L.center, address: raw.address || '' };
+  b.plotW = L.plotW; b.plotD = L.plotD; b.street = L.street; b.hemisphere = L.hemisphere;
+  changed();
+}
+
 function renderWizard() {
+  unmountMap();
   const st = STEPS[state.step];
   $('#progress').innerHTML = STEPS.map((s, i) => `<li class="${i < state.step ? 'done' : ''} ${i === state.step ? 'on' : ''}"><button type="button" data-goto="${i}" ${i === state.step ? 'aria-current="step"' : ''}><span class="n">${i + 1}</span><span class="t">${s.name}</span></button></li>`).join('');
   const el = $('#wizStep');
@@ -456,6 +609,7 @@ function renderWizard() {
   $('#wizNext').textContent = state.step === STEPS.length - 1 ? 'See my designs' : 'Continue';
   $('#wizCount').textContent = `Step ${state.step + 1} of ${STEPS.length}`;
   renderPreview();
+  if (state.step === 0 && state.plotMode === 'map') mountMap();
 }
 
 function renderPreview() {
@@ -466,7 +620,7 @@ function renderPreview() {
   el.innerHTML = `
     <div class="pv-head"><b>Live preview</b><span>Updates as you choose</span></div>
     <div class="pv-plan">${renderThumb(d)}</div>
-    ${titleblock([['Plot', `${b.plotW} × ${b.plotD} m`], ['Floor area', `${b.area} m²`], ['Storeys', b.floors], ['Bedrooms', b.bedrooms], ['Bathrooms', b.bathrooms], ['Style', STYLES[b.style].name]], 'grid c3')}
+    ${titleblock([['Plot', b.lot ? `${b.lot.area} m² lot` : `${b.plotW} × ${b.plotD} m`], ['Floor area', `${b.area} m²`], ['Storeys', b.floors], ['Bedrooms', b.bedrooms], ['Bathrooms', b.bathrooms], ['Style', STYLES[b.style].name]], 'grid c3')}
     <div class="pv-foot">
       ${rulesStatus(1)}
       <p>${state.report?.feasible === false
@@ -513,7 +667,11 @@ function syncWizard() {
   $$('#wizStep [data-rule]').forEach((el) => { if (document.activeElement !== el) el.value = b.rules[el.dataset.rule]; });
   const pdsc = $('#profileDesc'); if (pdsc) pdsc.textContent = profileDesc();
   const envEl = $('#envLine'); if (envEl) envEl.innerHTML = envLine();
-  const pd = $('#plotDiagram'); if (pd) pd.innerHTML = plotDiagram();
+  const lf = $('#lotFacts');
+  if (lf) lf.innerHTML = lotFacts();
+  else { const pd = $('#plotDiagram'); if (pd) pd.innerHTML = plotDiagram(); }
+  const og = $('#orientGroup');
+  if (og && og.dataset.key !== orientKey()) { og.dataset.key = orientKey(); og.innerHTML = orientGroup(); }
   const ot = $('#orientText'); if (ot) ot.innerHTML = orientText();
   const ah = $('#areaHint'); if (ah) ah.textContent = areaHint();
   const hs = $('.compass-pick .house'); if (hs) hs.style.transform = `rotate(${{ S: 0, W: 90, N: 180, E: 270 }[b.street]}deg)`;
@@ -528,6 +686,14 @@ function bindWizard() {
     if (tg) { const k = tg.dataset.toggle; state.brief[k] = !state.brief[k]; return changed(); }
     const pf = e.target.closest('[data-profile]');
     if (pf) { const k = pf.dataset.profile; state.brief.rules = { ...state.brief.rules, ...zoning(k) }; return changed(); }
+    const pm = e.target.closest('[data-plot-mode]');
+    if (pm) return setPlotMode(pm.dataset.plotMode);
+    const ma = e.target.closest('[data-map]');
+    if (ma) return mapAction(ma.dataset.map);
+    const ml = e.target.closest('[data-map-layer]');
+    if (ml && mapCtl) { mapCtl.setLayer(ml.dataset.mapLayer); $$('[data-map-layer]').forEach((x) => x.classList.toggle('on', x === ml)); return; }
+    const pr = e.target.closest('[data-place]');
+    if (pr && mapCtl) { mapCtl.goTo(state.places[+pr.dataset.place]); $('#mapResults').hidden = true; setMapStatus('Found it. Now press Draw lot and click each corner of the lot.'); }
     const sp = e.target.closest('[data-step]');
     if (sp) { const k = sp.dataset.step; state.brief[k] = Math.max(+sp.dataset.min, Math.min(+sp.dataset.max, state.brief[k] + +sp.dataset.d)); changed(); }
   });
@@ -542,6 +708,7 @@ function bindWizard() {
       if (!Number.isNaN(v)) { state.brief.rules = { ...state.brief.rules, [el.dataset.rule]: v }; changed(); }
     }
   });
+  step.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'mapQ') { e.preventDefault(); mapAction('search'); } });
   $('#progress').addEventListener('click', (e) => { const b = e.target.closest('[data-goto]'); if (b) goStep(+b.dataset.goto); });
   $('#wizBack').addEventListener('click', () => goStep(state.step - 1));
   $('#wizNext').addEventListener('click', () => (state.step === STEPS.length - 1 ? goStudio() : goStep(state.step + 1)));
@@ -619,7 +786,14 @@ function applyFix(i) {
 
 // ── studio ──────────────────────────────────────────────────
 function briefSentence(b) {
-  return [`${b.bedrooms} bedrooms`, `${b.bathrooms} bathrooms`, `${b.area} m² target`, `${b.floors} storey${b.floors > 1 ? 's' : ''}`, STYLES[b.style].name, `${b.plotW} × ${b.plotD} m plot`, profileName(rulesOf(b))].join(', ');
+  return [`${b.bedrooms} bedrooms`, `${b.bathrooms} bathrooms`, `${b.area} m² target`, `${b.floors} storey${b.floors > 1 ? 's' : ''}`, STYLES[b.style].name, plotLabel(b), profileName(rulesOf(b))].join(', ');
+}
+const plotLabel = (b) => (b.lot ? `${b.lot.area} m² lot from the map` : `${b.plotW} × ${b.plotD} m plot`);
+function siteCaption(d) {
+  const b = d.brief;
+  if (!b.lot) return `${b.plotW} × ${b.plotD} m plot with the street to the ${DIR_NAME[b.street]}. The house is set back ${+(d.site.oy - d.site.prot).toFixed(1)} m from the street.`;
+  const addr = b.lot.address ? ` at ${esc(b.lot.address.split(',').slice(0, 2).join(','))}` : '';
+  return `${b.lot.area} m² lot drawn on the map${addr}, with the street to the ${compassName(b.lot.bearing)}. The house sits where it fits inside the setbacks, nearest the street.`;
 }
 function renderStudio() {
   const d = state.design; if (!d) return;
@@ -779,7 +953,8 @@ function renderTabs() {
       <div class="cost"><span>Estimated build cost</span><b>${money(M.costLow)} to ${money(M.costHigh)}</b></div>
       <div>${titleblock(cells, 'grid c2')}</div>
       <div><h3>Why this design works</h3><ul class="notes">${d.story.lines.map((l) => `<li>${ic('check')}<span>${l}</span></li>`).join('')}</ul></div>
-      ${d.story.warns.length ? `<div><h3>Worth reviewing</h3><ul class="notes warn">${d.story.warns.map((l) => `<li>${ic('warn')}<span>${l}</span></li>`).join('')}</ul></div>` : ''}`;
+      ${d.story.warns.length ? `<div><h3>Worth reviewing</h3><ul class="notes warn">${d.story.warns.map((l) => `<li>${ic('warn')}<span>${l}</span></li>`).join('')}</ul></div>` : ''}
+      <div><h3>Site plan</h3><div class="site-plan">${renderSitePlan(d)}</div><p class="sub site-cap">${siteCaption(d)}</p></div>`;
   } else if (state.tab === 'rooms') {
     const r = state.sel;
     let card = '<p class="empty-hint">Select a room on the plan or in the 3D view to see its size, windows and orientation.</p>';
@@ -1050,6 +1225,7 @@ function bindChrome() {
 }
 function openPreset(p) {
   state.brief = presetBrief(p);
+  state.plotMode = 'dims';
   store.set('parametra.brief', state.brief);
   generate();
   location.hash = '#/studio';

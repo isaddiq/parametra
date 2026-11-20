@@ -21,7 +21,7 @@ ES modules must be served over http. Opening `index.html` straight from disk won
 2. In **Settings → Pages**, set the source to **Deploy from a branch**, then pick your branch and `/ (root)`.
 3. The site goes live at `https://<user>.github.io/<repo>/`. All paths are relative and routing uses the URL hash (`#/brief`, `#/studio`), so no server rewrites are needed. `.nojekyll` stops Jekyll from processing the files.
 
-The only external request is Google Fonts (Archivo). If the fonts are blocked, the site falls back to system fonts.
+The only external request on page load is Google Fonts (Archivo). If the fonts are blocked, the site falls back to system fonts. The optional map in the brief's first step loads more, only when it is opened (see [Real lots on a map](#real-lots-on-a-map)).
 
 ## How it's organised
 
@@ -92,6 +92,27 @@ The brief's first step has three starting profiles (Suburban, Urban infill, Rura
 - what plot would pass, where the plot decides ("needs a plot at least 17.3 m wide");
 - changes to the brief that make it fit, such as "Leave out the garage". Each one is proved by regenerating the layouts and finding one that passes every rule. Single changes are tried first, cheapest first, then a beam search over up to four changes. The search runs in a Web Worker (`js/fixworker.js`), so the page stays responsive.
 
+### Real lots on a map
+
+The Plot step has two modes. **Enter dimensions** (the default) works as before. **Find it on a map** is optional:
+
+1. Search an address, or skip the search and pan the map yourself.
+2. Press **Draw lot**, click each corner, then close the shape (click the first corner, double-click, or press Finish). Drag corners to adjust it.
+3. Parametra reads the lot area, frontage, depth, street bearing and hemisphere from the drawing. It finds the street side from the nearest OpenStreetMap road outside an edge. Click any edge to change it.
+
+How the drawn lot is used (`js/lot.js`):
+
+- The corners are projected to local metres and rotated so the street edge runs along the bottom.
+- Setbacks apply per edge: front for the street edge, rear for edges facing the back, side for the rest.
+- The buildable area is computed on a grid of 10 cm or finer. A cell counts only if all of it keeps every setback, so fits are never overstated, by up to about 0.2 m.
+- A largest-rectangle sweep finds the widest street-aligned footprint at every depth. That caps the generator, and the house goes where it fits nearest the street, centred on the frontage. This works for concave lots too.
+- The planning rules swap the two rectangle setback checks for one **Setbacks** check: the footprint, garage included, must fit inside the lot. Site coverage, floor area ratio and planted ground use the true lot area. The patio and pool shrink, or are left out, to stay inside the boundary.
+- The 3D view builds fences or walls along every lot edge, angled ones included. Trees, shrubs and grass stay inside the lot. The Overview tab shows a site plan.
+
+Services the map uses, only once it is opened: map imagery from Esri World Imagery and OpenStreetMap tiles; address search and street detection from OpenStreetMap Nominatim, with the Overpass API as a fallback for street detection. Leaflet 1.9.4 is vendored in `vendor/leaflet/` and loaded on first use. The drawn lot, including its coordinates and address, is saved only in the browser's local storage and in exports the user makes. Check each provider's usage terms before heavy or commercial use; for that, a keyed imagery provider is the usual choice.
+
+Limitations: the house is still a street-aligned rectangle with a garage, so wedge-shaped or very irregular lots leave some buildable area unused. Sun studies use the nearest compass direction to the real street bearing. Drawing on the map needs a mouse or touch; typing the dimensions works from the keyboard.
+
 ### Exact solvers (`js/solver.js`)
 
 No solver library is needed, so the site stays static with no runtime dependencies:
@@ -110,6 +131,8 @@ js/main.js            router, landing page, brief wizard, studio, exports
 js/data.js            room catalogue, styles, rule profiles, room minimums, defaults
 js/engine.js          layout generator, walls/openings, scoring, recommender, fix search
 js/rules.js           planning rules: envelope caps, compliance check, diagnosis, fixes
+js/lot.js             drawn lots: projection, street frame, buildable grid, largest-rectangle fit
+js/sitemap.js         the optional map: Leaflet, address search, drawing, street detection
 js/solver.js          exact band-width QP and band-assignment branch and bound
 js/fixworker.js       runs the fix search off the main thread
 js/furniture.js       furniture layout solver
@@ -120,6 +143,7 @@ js/models3d.js        furniture models
 js/textures.js        procedural textures and leaf cards (no image assets)
 js/ifc.js             IFC4 STEP exporter
 vendor/three/         Three.js r169 (MIT) and the addons used
+vendor/leaflet/       Leaflet 1.9.4 (BSD-2-Clause), loaded only with the map
 start.bat             local launcher for Windows
 ```
 

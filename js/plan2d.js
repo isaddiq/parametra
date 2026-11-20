@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────
 import { T_EXT, T_INT, STAIR_W, compass } from './engine.js';
 import { ROOM_TYPES } from './data.js';
+import { signedArea } from './lot.js';
 
 const AZ = { N: 0, E: 90, S: 180, W: 270 };
 const ROT = { N: 0, S: 180, W: -90, E: 90 };
@@ -350,3 +351,48 @@ const SYM = {
   otable: (a, b, it) => (it.round ? Cc(0, 0, a / 2) : R(-a / 2, -b / 2, a, b)) + (it.chairs ? Array.from({ length: it.chairs }, (_, i) => { const side = i % 2 ? 1 : -1, along = (Math.floor(i / 2) + 0.5) / Math.ceil(it.chairs / 2) - 0.5; return a >= b ? R(along * a - 0.22, side * (b / 2 + 0.3) - 0.22, 0.44, 0.44, 'pl-furn', 0.05) : R(side * (a / 2 + 0.3) - 0.22, along * b - 0.22, 0.44, 0.44, 'pl-furn', 0.05); }).join('') : ''),
   planter: (a, b) => R(-a / 2, -b / 2, a, b) + Cc(0, 0, Math.min(a, b) * 0.32, 'pl-furn-l'),
 };
+
+/**
+ * Site plan: the lot (drawn on the map or typed in), the house footprint, driveway, path,
+ * patio and pool, the street, the edge lengths of a drawn lot, and a north arrow.
+ */
+export function renderSitePlan(d) {
+  const s = d.site, b = d.brief, Y = (y) => -y;
+  const lot = s.lot;
+  const xs = lot.map((p) => p[0]), ys = lot.map((p) => p[1]);
+  const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  const fs = Math.max(0.6, span / 34);
+  const streetY = lot[s.front][1];
+  const pad = fs * 2.2;
+  const vx = Math.min(...xs) - pad, vx1 = Math.max(...xs) + pad * 2.4, vTop = Math.max(...ys) + pad, vBot = streetY - fs * 5;
+  const o = [`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${f2(vx)} ${f2(Y(vTop))} ${f2(vx1 - vx)} ${f2(vTop - vBot)}" class="site-svg" role="img" aria-label="Site plan: the house on its ${Math.round(b.lot?.area ?? b.plotW * b.plotD)} m² lot">`];
+  // street
+  o.push(`<rect class="sp-road" x="${f2(vx)}" y="${f2(Y(streetY - fs * 0.4))}" width="${f2(vx1 - vx)}" height="${f2(fs * 4.6)}"/>`);
+  o.push(`<text class="sp-label" x="${f2((vx + vx1) / 2)}" y="${f2(Y(streetY - fs * 2.9))}" font-size="${f2(fs)}" text-anchor="middle">Street</text>`);
+  // lot, outdoor areas, house
+  o.push(`<polygon class="sp-lot" points="${lot.map(([x, y]) => `${f2(x)},${f2(Y(y))}`).join(' ')}" stroke-width="${f2(fs * 0.12)}"/>`);
+  for (const [r, cls] of [[s.driveway, 'sp-pave'], [s.path, 'sp-pave'], [s.patio, 'sp-pave'], [s.pool, 'sp-pool']]) {
+    if (r) o.push(`<rect class="${cls}" x="${f2(r.x)}" y="${f2(Y(r.y + r.h))}" width="${f2(r.w)}" height="${f2(r.h)}"/>`);
+  }
+  for (const r of d.floors[0].rooms) o.push(`<rect class="sp-house" x="${f2(r.x)}" y="${f2(Y(r.y + r.h))}" width="${f2(r.w)}" height="${f2(r.h)}"/>`);
+  // edge lengths of a drawn lot
+  if (s.drawn) {
+    const ccw = signedArea(lot) > 0;
+    lot.forEach((p, i) => {
+      const q = lot[(i + 1) % lot.length], dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy);
+      if (len < fs * 3 || i === s.front) return;
+      // just outside the edge, along its outward normal
+      const nx = (ccw ? dy : -dy) / len, ny = (ccw ? -dx : dx) / len, k = fs * 0.9;
+      o.push(`<text class="sp-dim" x="${f2((p[0] + q[0]) / 2 + nx * k)}" y="${f2(Y((p[1] + q[1]) / 2 + ny * k) + fs * 0.3)}" font-size="${f2(fs * 0.85)}" stroke-width="${f2(fs * 0.22)}" text-anchor="middle">${len.toFixed(1)} m</text>`);
+    });
+    const fp = lot[s.front], fq = lot[(s.front + 1) % lot.length];
+    o.push(`<text class="sp-dim" x="${f2((fp[0] + fq[0]) / 2)}" y="${f2(Y(streetY) + fs * 1.3)}" font-size="${f2(fs * 0.85)}" stroke-width="${f2(fs * 0.22)}" text-anchor="middle">${Math.hypot(fq[0] - fp[0], fq[1] - fp[1]).toFixed(1)} m frontage</text>`);
+  }
+  // north arrow: screen-up points into the lot, away from the street
+  const up = ((b.lot?.bearing ?? AZ[b.street]) + 180) % 360;
+  const ax = vx1 - fs * 2.4, ay = Y(vTop) + fs * 2.6;
+  o.push(`<g transform="translate(${f2(ax)} ${f2(ay)}) rotate(${-up})"><circle r="${f2(fs * 1.1)}" class="sp-n-ring" stroke-width="${f2(fs * 0.08)}"/><path d="M0 ${f2(-fs * 0.9)}L${f2(fs * 0.45)} ${f2(fs * 0.5)}L0 ${f2(fs * 0.2)}L${f2(-fs * 0.45)} ${f2(fs * 0.5)}Z" class="sp-n"/>`
+    + `<g transform="translate(0 ${f2(-fs * 1.8)}) rotate(${up})"><text class="sp-label" font-size="${f2(fs * 0.85)}" text-anchor="middle" dy="0.35em">N</text></g></g>`);
+  o.push('</svg>');
+  return o.join('');
+}

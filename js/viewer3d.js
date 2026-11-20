@@ -16,6 +16,7 @@ import { furnitureMaterials, buildFurniture } from './models3d.js';
 import { grassMaterial, scatterGrass, Foliage, plantTree, plantShrub, hedge, buildBoundary, rock, boxUV, GARDEN_SPECIES, STREET_SPECIES, SHRUB_KIND } from './landscape.js';
 import { CORR, STAIR_W, T_EXT, T_INT, SLAB, rectUnion, outerEdges, compass } from './engine.js';
 import { WET } from './data.js';
+import { pointInPoly, distToBoundary, signedArea } from './lot.js';
 import { furnitureTag, exportIFC as writeIFC } from './ifc.js';
 
 // Readable material names for BIM export (texture kind -> finish)
@@ -259,7 +260,7 @@ export class Viewer3D {
   // ── design build ──────────────────────────────────────────
   setDesign(d) {
     const first = !this.design;
-    const sameSite = this.design && this.design.brief.plotW === d.brief.plotW && this.design.brief.plotD === d.brief.plotD;
+    const sameSite = this.design && this.design.brief.plotW === d.brief.plotW && this.design.brief.plotD === d.brief.plotD && JSON.stringify(this.design.site.lot) === JSON.stringify(d.site.lot);
     this.design = d;
     this.clear();
     this.cx = d.W / 2; this.cy = d.D / 2;
@@ -901,6 +902,9 @@ export class Viewer3D {
     const s = d.site, b = d.brief, M = this.mats, g = this.siteGroup;
     const rand = rng(Math.round(d.W * 1000 + d.D * 7 + b.plotW * 13));
     const px0 = -s.ox, px1 = -s.ox + b.plotW, py0 = -s.oy, py1 = -s.oy + b.plotD;
+    // a lot drawn on the map: its polygon in plan coordinates (a rectangular plot needs no tests)
+    const lot = s.drawn ? s.lot : null;
+    const inLot = (x, y, m = 0) => !lot || (pointInPoly(x, y, lot) && (m <= 0 || distToBoundary(x, y, lot) >= m));
     // ground with a hole for the pool
     const big = 220;
     const shape = new THREE.Shape([new THREE.Vector2(-big, -big), new THREE.Vector2(big, -big), new THREE.Vector2(big, big), new THREE.Vector2(-big, big)]);
@@ -1004,7 +1008,7 @@ export class Viewer3D {
     const W = (x) => this.wx(x), Z = (y) => this.wz(y);
     // boundary walls / fences with openings for the driveway and path
     const gaps = [s.driveway, s.path].filter(Boolean).map((r) => [W(r.x - 0.35), W(r.x + r.w + 0.35)]);
-    const spec = buildBoundary(g, d.styleKey, [
+    const spec = lot ? this.lotBoundary(g, d, lot, s.front, gaps) : buildBoundary(g, d.styleKey, [
       { kind: 'front', axis: 'x', fixed: Z(py0 + 0.12), a: W(px0 + 0.12), b: W(px1 - 0.12), gaps, inward: -1 },
       { kind: 'side', axis: 'z', fixed: W(px0 + 0.12), a: Z(py1 - 0.12), b: Z(py0 + 0.12), inward: 1 },
       { kind: 'side', axis: 'z', fixed: W(px1 - 0.12), a: Z(py1 - 0.12), b: Z(py0 + 0.12), inward: -1 },
@@ -1035,12 +1039,23 @@ export class Viewer3D {
       for (let x = a + 0.5; x < c - 0.3; x += 0.95 + rand() * 0.35) plantShrub(W(x), Z(-0.7 + (rand() - 0.5) * 0.2), 0.38 + rand() * 0.2, rand, foliage, rand() > 0.75 ? 'shrub' : shrubKind);
     }
     // planting along the boundary
-    if (spec.hedge) { hedge(g, foliage, W(px0 + 0.9), Z(py1 - 0.75), W(px1 - 0.9), Z(py1 - 0.75), 1.5, 0.8, rand); hard.push({ x: px0, y: py1 - 1.3, w: b.plotW, h: 1.3 }); }
+    if (spec.hedge && !lot) { hedge(g, foliage, W(px0 + 0.9), Z(py1 - 0.75), W(px1 - 0.9), Z(py1 - 0.75), 1.5, 0.8, rand); hard.push({ x: px0, y: py1 - 1.3, w: b.plotW, h: 1.3 }); }
     const edgeSpots = [];
-    for (let y = py0 + 2.5; y < py1 - 1; y += 2.2 + rand() * 1.2) { edgeSpots.push([px0 + 0.9, y]); edgeSpots.push([px1 - 0.9, y]); }
-    if (!spec.hedge) for (let x = px0 + 1.5; x < px1 - 1.5; x += 2.4 + rand() * 1.2) edgeSpots.push([x, py1 - 0.9]);
+    if (lot) {
+      // shrubs 0.9 m inside every boundary except the street
+      const sA = signedArea(lot);
+      lot.forEach((p, i) => {
+        if (i === s.front) return;
+        const q = lot[(i + 1) % lot.length], dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy);
+        const ix = (sA > 0 ? -dy : dy) / len, iy = (sA > 0 ? dx : -dx) / len;
+        for (let t = 1.2; t < len - 1; t += 2.2 + rand() * 1.2) edgeSpots.push([p[0] + (dx * t) / len + ix * 0.9, p[1] + (dy * t) / len + iy * 0.9]);
+      });
+    } else {
+      for (let y = py0 + 2.5; y < py1 - 1; y += 2.2 + rand() * 1.2) { edgeSpots.push([px0 + 0.9, y]); edgeSpots.push([px1 - 0.9, y]); }
+      if (!spec.hedge) for (let x = px0 + 1.5; x < px1 - 1.5; x += 2.4 + rand() * 1.2) edgeSpots.push([x, py1 - 0.9]);
+    }
     for (const [x, y] of edgeSpots) {
-      if (rand() < 0.35 || inRects(hard, x, y, 0.6)) continue;
+      if (rand() < 0.35 || inRects(hard, x, y, 0.6) || !inLot(x, y, 0.5)) continue;
       plantShrub(W(x), Z(y), 0.5 + rand() * 0.45, rand, foliage, rand() > 0.6 ? shrubKind : 'shrub');
       hard.push({ x: x - 0.6, y: y - 0.6, w: 1.2, h: 1.2 });
     }
@@ -1052,12 +1067,12 @@ export class Viewer3D {
     if (s.path) avoid.push({ x: s.path.x - 0.8, y: s.path.y - 1, w: s.path.w + 1.6, h: s.path.h + 2 });
     for (const f of d.floors) for (const bc of f.balconies) avoid.push({ x: bc.x - 1, y: bc.y, w: bc.w + 2, h: bc.h + 1.5 });
     const species = GARDEN_SPECIES[garden] || GARDEN_SPECIES.minimal;
-    const area = b.plotW * b.plotD;
+    const area = s.drawn ? b.lot.area : b.plotW * b.plotD;
     const nTrees = Math.min(12, Math.max(3, Math.round(area / 110)));
     const treeAt = [];
     for (let tries = 0; tries < 400 && treeAt.length < nTrees; tries++) {
       const x = px0 + 2 + rand() * (b.plotW - 4), y = py0 + 1.8 + rand() * (b.plotD - 3.6);
-      if (inRects(avoid, x, y, 1.4) || treeAt.some(([u, v]) => Math.hypot(u - x, v - y) < 3.6)) continue;
+      if (inRects(avoid, x, y, 1.4) || treeAt.some(([u, v]) => Math.hypot(u - x, v - y) < 3.6) || !inLot(x, y, 1.6)) continue;
       treeAt.push([x, y]);
       plantTree(species[treeAt.length % species.length], W(x), Z(y), rand, g, foliage, 0.85 + rand() * 0.3);
     }
@@ -1072,7 +1087,7 @@ export class Viewer3D {
     if (garden === 'zen') {
       for (let i = 0; i < 7; i++) {
         const x = px0 + 2 + rand() * (b.plotW - 4), y = d.D + 2.5 + rand() * Math.max(1, b.plotD - s.oy - d.D - 4);
-        if (inRects(avoid, x, y, 0.4)) continue;
+        if (inRects(avoid, x, y, 0.4) || !inLot(x, y, 1)) continue;
         rock(g, W(x), Z(y), 0.3 + rand() * 0.5, rand);
         hard.push({ x: x - 0.6, y: y - 0.6, w: 1.2, h: 1.2 });
       }
@@ -1083,11 +1098,37 @@ export class Viewer3D {
     const free = (X, Zw) => {
       const x = X + this.cx, y = this.cy - Zw;
       if (x < px0 + 0.35 || x > px1 - 0.35 || y < py0 + 0.35 || y > py1 - 0.35) return false;
-      return !inRects(hard, x, y);
+      return !inRects(hard, x, y) && inLot(x, y);
     };
     scatterGrass(g, { x0: W(px0), x1: W(px1), z0: Z(py1), z1: Z(py0) }, free, Math.min(26000, Math.round(lawnArea * 24)), rand);
     void boxUV;
     this.plotBounds = { px0, px1, py0, py1 };
+  }
+
+  /** Boundary walls or fences along every edge of a drawn lot. Angled edges are built as rotated runs. */
+  lotBoundary(g, d, lot, front, gaps) {
+    const W = (x) => this.wx(x), Z = (y) => this.wz(y);
+    const sA = signedArea(lot);
+    let spec = null;
+    lot.forEach((p, i) => {
+      const q = lot[(i + 1) % lot.length], dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy);
+      if (len < 0.5) return;
+      if (i === front) {
+        // the street edge runs along x, so the driveway and path gaps apply as they are
+        spec = buildBoundary(g, d.styleKey, [{ kind: 'front', axis: 'x', fixed: Z(p[1] + 0.12), a: W(Math.min(p[0], q[0]) + 0.12), b: W(Math.max(p[0], q[0]) - 0.12), gaps, inward: -1 }]);
+        return;
+      }
+      const run = new THREE.Group();
+      const th = Math.atan2(dy, dx); // world direction is (dx, -dy): rotation.y = atan2(dy, dx)
+      run.position.set(W(p[0]), 0, Z(p[1]));
+      run.rotation.y = th;
+      g.add(run);
+      // which local side (±z) faces into the lot
+      const ix = sA > 0 ? -dy : dy, iy = sA > 0 ? dx : -dx;
+      const sign = Math.sign(Math.sin(th) * ix + Math.cos(th) * -iy) || 1;
+      spec = buildBoundary(run, d.styleKey, [{ kind: 'side', axis: 'x', fixed: 0.12 * sign, a: 0.12, b: len - 0.12, inward: sign }]);
+    });
+    return spec || { hedge: false };
   }
 
   fitShadows(d) {

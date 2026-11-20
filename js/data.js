@@ -158,6 +158,7 @@ export const ROOM_MINIMUMS = {
 
 export const DEFAULT_BRIEF = {
   plotW: 24, plotD: 34, setFront: 5, setSide: 1.5, setRear: 6,
+  lot: null,                // a lot drawn on the map (js/lot.js), or null to use plotW × plotD
   rules: { ...DEFAULT_RULES },
   street: 'S',              // compass direction the street (front) faces
   area: 230, floors: 2, ceiling: 2.8,

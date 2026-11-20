@@ -483,6 +483,49 @@ body[data-route="studio"] { overflow: hidden; }
 .opt .o-txt small.bad { color: var(--bad); font-weight: 650; }
 .opt.fails .o-score b { color: var(--muted); }
 
+/* lot on a map */
+.btn-sm { height: 34px; padding: 0 12px; font-size: 13.5px; }
+.map-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.map-search .box { display: flex; align-items: center; height: 44px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); padding: 0 12px; }
+.map-search .box:focus-within { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.map-search input { border: 0; background: none; width: 100%; outline: none; font: inherit; font-size: 15px; color: var(--ink); min-width: 0; }
+.map-search .btn { height: 44px; }
+.map-results { display: grid; gap: 2px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); }
+.map-results[hidden] { display: none; }
+.map-results button { width: 100%; text-align: left; border: 0; background: none; padding: 8px 10px; border-radius: 6px; font-size: 13.5px; color: var(--ink-2); }
+.map-results button:hover { background: var(--sunken); color: var(--ink); }
+.lot-map-wrap { border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.lot-map { height: 400px; background: var(--sunken); z-index: 0; }
+.map-loading { height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.lot-map.drawing, .lot-map.drawing .leaflet-interactive { cursor: crosshair !important; }
+.map-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-top: 1px solid var(--line); }
+.map-bar .map-layer { margin-left: auto; }
+.map-bar [hidden] { display: none; }
+.map-status { font-size: 13.5px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.map-status.ok { color: var(--good); }
+.map-status.bad { color: var(--bad); }
+.help.fine { font-size: 12.5px; }
+.help.addr { margin-top: 8px; font-size: 12.5px; }
+.lot-facts { align-items: center; }
+.lot-facts .titleblock { border: 1px solid var(--line); border-radius: 6px; }
+.lot-vtx { background: #fff; border: 2px solid #1D2226; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+.lot-vtx.first { background: #F2C14E; cursor: pointer; transform-origin: center; outline: 3px solid rgba(242, 193, 78, .45); }
+.lot-vtx.edit { cursor: move; }
+.lot-len { width: 0 !important; height: 0 !important; pointer-events: none; }
+.lot-len span { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); padding: 2px 7px; border-radius: 99px; background: rgba(20, 24, 22, .78); color: #fff; font: 650 11.5px/1.4 var(--font); white-space: nowrap; }
+.lot-len.front span { background: #C8481F; }
+.site-plan { border: 1px solid var(--line); border-radius: 6px; background: var(--plan-bg); padding: 6px; }
+.site-svg { display: block; width: 100%; height: auto; max-height: 300px; }
+.sp-road { fill: var(--sunken); }
+.sp-lot { fill: color-mix(in srgb, var(--green) 10%, var(--plan-bg)); stroke: var(--plan-ink); stroke-dasharray: none; }
+.sp-house { fill: var(--plan-ink); }
+.sp-pave { fill: var(--plan-patio); stroke: var(--plan-muted); stroke-width: .05; }
+.sp-pool { fill: var(--plan-pool); stroke: var(--plan-ink2); stroke-width: .05; }
+.sp-label { fill: var(--muted); font-family: var(--font); font-weight: 650; }
+.sp-dim { fill: var(--plan-dim); font-family: var(--font); font-weight: 650; paint-order: stroke; stroke: var(--plan-bg); stroke-linejoin: round; }
+.sp-n { fill: var(--green); }
+.sp-n-ring { fill: var(--plan-bg); stroke: var(--line-strong); }
+
 /* rules inputs in the brief */
 .seg-wrap { flex-wrap: wrap; justify-self: start; }
 .num small { font-size: 12.5px; color: var(--muted); line-height: 1.35; }
@@ -609,6 +652,8 @@ body[data-route="studio"] { overflow: hidden; }
   .progress li.on button .t { display: inline; }
   .two, .steppers, .numbers, .plot-wrap { grid-template-columns: 1fr; }
   .numbers.rule-nums { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lot-map { height: 320px; }
+  .map-bar .map-layer { margin-left: 0; }
   .rules-banner { grid-template-columns: 1fr; padding: 14px; }
   .orient { grid-template-columns: 1fr; justify-items: center; }
   .studio { padding: 14px 16px; }
