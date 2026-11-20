@@ -98,7 +98,7 @@ const state = {
   step: 0,
   view: window.innerWidth < 760 ? '3d' : 'split',
   level: 0, level3d: 'all', mode3d: 'exterior', tab: 'overview',
-  layers: { furniture: true, dims: true, roof: true, labels: true },
+  layers: { furniture: true, dims: true, roof: true, labels: true, map: true },
   sel: null, hover: null, route: 'home',
   heroDesign: null,
   report: null, fixes: null, // fixes: null while the search runs, [] when none is needed or found
@@ -593,7 +593,7 @@ function applyLot(raw) {
   if (!raw) { if (b.lot) { b.lot = null; changed(); } return; }
   const L = buildLot(raw.latlng, raw.front);
   if (L.error) { setMapStatus(L.error, 'bad'); return; }
-  b.lot = { latlng: L.latlng, front: L.front, poly: L.poly, kinds: L.kinds, lengths: L.lengths, area: L.area, frontage: L.frontage, plotW: L.plotW, plotD: L.plotD, bearing: L.bearing, center: L.center, address: raw.address || '' };
+  b.lot = { latlng: L.latlng, front: L.front, poly: L.poly, kinds: L.kinds, lengths: L.lengths, area: L.area, frontage: L.frontage, plotW: L.plotW, plotD: L.plotD, bearing: L.bearing, center: L.center, frame: L.frame, address: raw.address || '' };
   b.plotW = L.plotW; b.plotD = L.plotD; b.street = L.street; b.hemisphere = L.hemisphere;
   changed();
 }
@@ -850,6 +850,7 @@ function renderViewerBar() {
   $('#levelSeg').innerHTML = (showAll ? `<button type="button" data-lv="all" class="${cur === 'all' ? 'on' : ''}">All</button>` : '') +
     d.floors.map((_, k) => `<button type="button" data-lv="${k}" class="${cur === k ? 'on' : ''}">${levelName(k)}</button>`).join('');
   $('#levelSeg').hidden = d.nFloors === 1;
+  $('#mapLayerRow').hidden = !d.brief.lot;
   $$('#modeSeg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === state.mode3d));
 }
 
@@ -1153,6 +1154,7 @@ async function init3D() {
         $('#pane3d').classList.toggle('walking', m === 'walk');
       },
       onCompass: (h) => { $('#compass3d').style.transform = `rotate(${-h}deg)`; },
+      onCredit: (t) => { const el = $('#mapCredit'); el.textContent = t || ''; el.hidden = !t; },
     });
     viewer.setSunTime(+$('#sun').value);
     $('#loading3d')?.remove();
@@ -1170,7 +1172,7 @@ async function init3D() {
 }
 function applyStudioViewerState() {
   if (!viewer) return;
-  for (const k of ['roof', 'furniture', 'labels']) viewer.setToggle(k, state.layers[k]);
+  for (const k of ['roof', 'furniture', 'labels', 'map']) viewer.setToggle(k, state.layers[k]);
   if (viewer.mode !== state.mode3d && state.mode3d !== 'walk') viewer.setMode(state.mode3d);
   viewer.setLevel(state.level3d);
 }

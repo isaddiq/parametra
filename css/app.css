@@ -514,6 +514,8 @@ body[data-route="studio"] { overflow: hidden; }
 .lot-len { width: 0 !important; height: 0 !important; pointer-events: none; }
 .lot-len span { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); padding: 2px 7px; border-radius: 99px; background: rgba(20, 24, 22, .78); color: #fff; font: 650 11.5px/1.4 var(--font); white-space: nowrap; }
 .lot-len.front span { background: #C8481F; }
+.map-credit { position: absolute; left: 10px; bottom: 10px; z-index: 5; max-width: calc(100% - 80px); padding: 3px 8px; border-radius: 5px; background: rgba(255, 255, 255, .82); color: #2D3B36; font-size: 11px; font-weight: 560; pointer-events: none; }
+.map-credit[hidden] { display: none; }
 .site-plan { border: 1px solid var(--line); border-radius: 6px; background: var(--plan-bg); padding: 6px; }
 .site-svg { display: block; width: 100%; height: auto; max-height: 300px; }
 .sp-road { fill: var(--sunken); }

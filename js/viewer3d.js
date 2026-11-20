@@ -16,7 +16,8 @@ import { furnitureMaterials, buildFurniture } from './models3d.js';
 import { grassMaterial, scatterGrass, Foliage, plantTree, plantShrub, hedge, buildBoundary, rock, boxUV, GARDEN_SPECIES, STREET_SPECIES, SHRUB_KIND } from './landscape.js';
 import { CORR, STAIR_W, T_EXT, T_INT, SLAB, rectUnion, outerEdges, compass } from './engine.js';
 import { WET } from './data.js';
-import { pointInPoly, distToBoundary, signedArea } from './lot.js';
+import { pointInPoly, distToBoundary, signedArea, lotFrame, toPlot } from './lot.js';
+import { loadImagery, loadBuildings, IMAGERY_CREDIT, BUILDINGS_CREDIT } from './surroundings.js';
 import { furnitureTag, exportIFC as writeIFC } from './ifc.js';
 
 // Readable material names for BIM export (texture kind -> finish)
@@ -106,9 +107,9 @@ function wallGeometry(x0, x1, h, e0, depth, cuts) {
 function rng(seed) { let s = seed >>> 0 || 7; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
 
 export class Viewer3D {
-  constructor(el, { onHover, onSelect, onModeChange, onCompass } = {}) {
+  constructor(el, { onHover, onSelect, onModeChange, onCompass, onCredit } = {}) {
     this.el = el;
-    this.cb = { onHover, onSelect, onModeChange, onCompass };
+    this.cb = { onHover, onSelect, onModeChange, onCompass, onCredit };
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }));
     r.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     r.shadowMap.enabled = true;
@@ -161,7 +162,7 @@ export class Viewer3D {
 
     this.mode = 'exterior';
     this.level = 'all';
-    this.toggles = { roof: true, furniture: true, labels: true, site: true };
+    this.toggles = { roof: true, furniture: true, labels: true, site: true, map: true };
     this.sunHour = 15;
     this.keys = {};
     this.clock = new THREE.Clock();
@@ -905,9 +906,15 @@ export class Viewer3D {
     // a lot drawn on the map: its polygon in plan coordinates (a rectangular plot needs no tests)
     const lot = s.drawn ? s.lot : null;
     const inLot = (x, y, m = 0) => !lot || (pointInPoly(x, y, lot) && (m <= 0 || distToBoundary(x, y, lot) >= m));
-    // ground with a hole for the pool
+    // real surroundings: satellite imagery and neighbours around a lot drawn on the map
+    const real = !!(lot && b.lot?.latlng && this.toggles.map);
+    this.envGroup = new THREE.Group(); this.envGroup.name = 'Surroundings';
+    this.envGroup.userData.ifcSkip = true; // third-party data, kept out of exports
+    this.world.add(this.envGroup);
+    // ground with a hole for the pool: the whole view, or only the lot when the real surroundings show around it
     const big = 220;
-    const shape = new THREE.Shape([new THREE.Vector2(-big, -big), new THREE.Vector2(big, -big), new THREE.Vector2(big, big), new THREE.Vector2(-big, big)]);
+    const shape = new THREE.Shape(real ? lot.map(([x, y]) => new THREE.Vector2(this.wx(x), -this.wz(y)))
+      : [new THREE.Vector2(-big, -big), new THREE.Vector2(big, -big), new THREE.Vector2(big, big), new THREE.Vector2(-big, big)]);
     if (s.pool) {
       const p = s.pool;
       shape.holes.push(new THREE.Path([new THREE.Vector2(this.wx(p.x), -this.wz(p.y)), new THREE.Vector2(this.wx(p.x), -this.wz(p.y + p.h)), new THREE.Vector2(this.wx(p.x + p.w), -this.wz(p.y + p.h)), new THREE.Vector2(this.wx(p.x + p.w), -this.wz(p.y))].reverse()));
@@ -916,13 +923,20 @@ export class Viewer3D {
     const lawnCol = b.style === 'mediterranean' ? '#869257' : b.style === 'tropical' ? '#5C8C45' : '#6E9050';
     const ground = new THREE.Mesh(gGeo, grassMaterial(lawnCol));
     ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; g.add(ground);
+    if (real) {
+      // lawn beyond the imagery, below it
+      const far = new THREE.Mesh(new THREE.PlaneGeometry(big * 2, big * 2), grassMaterial(lawnCol));
+      far.rotation.x = -Math.PI / 2; far.position.y = -0.14; far.receiveShadow = true;
+      this.envGroup.add(far);
+      this.loadSurroundings(d);
+    } else this.cb.onCredit?.(null);
     const sw = 2.2, rw = 8;
     // IFC: the ground and street run to the horizon on screen; the BIM model
     // keeps them to the plot, the street in front and a margin around it.
     const ex0 = this.wx(px0) - 12, ex1 = this.wx(px1) + 12, ez0 = this.wz(py1) - 12, ez1 = this.wz(py0 - sw - rw) + 4;
     const clipShape = new THREE.Shape([new THREE.Vector2(ex0, -ez1), new THREE.Vector2(ex1, -ez1), new THREE.Vector2(ex1, -ez0), new THREE.Vector2(ex0, -ez0)]);
     clipShape.holes = shape.holes;
-    ground.userData.ifcGeometry = new THREE.ShapeGeometry(clipShape);
+    if (!real) ground.userData.ifcGeometry = new THREE.ShapeGeometry(clipShape); // a lot-shaped lawn exports as it is
     ground.userData.ifc = { cls: 'IfcGeographicElement', type: 'TERRAIN', name: 'Lawn' };
     const clipX = (m) => {
       const p = m.geometry.parameters, w = ex1 - ex0;
@@ -932,19 +946,21 @@ export class Viewer3D {
       m.userData.ifcGeometry = cg;
       return m;
     };
-    // street + sidewalk
-    const asphalt = new THREE.MeshStandardMaterial({ map: tex('asphalt', '#55575a'), roughness: 0.95, name: 'Asphalt' });
-    const kerbMat = new THREE.MeshStandardMaterial({ map: tex('concrete', '#BDB9B0'), roughness: 0.9, name: 'Kerb - concrete' });
-    clipX(this.box(g, big * 2, 0.02, rw, asphalt, 0, 0.005, this.wz(py0 - sw - rw / 2), { cast: false, ox: 0, oz: 0 })).userData.ifc = { cls: 'IfcCivilElement', name: 'Street' };
-    clipX(this.box(g, big * 2, 0.08, sw, M.paving, 0, 0.04, this.wz(py0 - sw / 2), { cast: false })).userData.ifc = { cls: 'IfcCivilElement', name: 'Footpath' };
-    clipX(this.box(g, big * 2, 0.13, 0.18, kerbMat, 0, 0.065, this.wz(py0 - sw + 0.09), { cast: false })).userData.ifc = { cls: 'IfcCivilElement', name: 'Kerb' };
-    // lane markings
-    const markMat = new THREE.MeshBasicMaterial({ color: '#e9e5da', name: 'Road marking' });
-    const marks = { cls: 'IfcCivilElement', name: 'Road markings' };
-    for (let x = -big; x < big; x += 6) {
-      const lm = this.box(g, 3, 0.022, 0.15, markMat, x, 0.012, this.wz(py0 - sw - rw / 2), { cast: false, uv: false });
-      lm.userData.ifc = marks;
-      if (x - 1.5 < ex0 || x + 1.5 > ex1) lm.userData.ifcSkip = true;
+    // street + sidewalk (with real surroundings, the real street is in the imagery)
+    if (!real) {
+      const asphalt = new THREE.MeshStandardMaterial({ map: tex('asphalt', '#55575a'), roughness: 0.95, name: 'Asphalt' });
+      const kerbMat = new THREE.MeshStandardMaterial({ map: tex('concrete', '#BDB9B0'), roughness: 0.9, name: 'Kerb - concrete' });
+      clipX(this.box(g, big * 2, 0.02, rw, asphalt, 0, 0.005, this.wz(py0 - sw - rw / 2), { cast: false, ox: 0, oz: 0 })).userData.ifc = { cls: 'IfcCivilElement', name: 'Street' };
+      clipX(this.box(g, big * 2, 0.08, sw, M.paving, 0, 0.04, this.wz(py0 - sw / 2), { cast: false })).userData.ifc = { cls: 'IfcCivilElement', name: 'Footpath' };
+      clipX(this.box(g, big * 2, 0.13, 0.18, kerbMat, 0, 0.065, this.wz(py0 - sw + 0.09), { cast: false })).userData.ifc = { cls: 'IfcCivilElement', name: 'Kerb' };
+      // lane markings
+      const markMat = new THREE.MeshBasicMaterial({ color: '#e9e5da', name: 'Road marking' });
+      const marks = { cls: 'IfcCivilElement', name: 'Road markings' };
+      for (let x = -big; x < big; x += 6) {
+        const lm = this.box(g, 3, 0.022, 0.15, markMat, x, 0.012, this.wz(py0 - sw - rw / 2), { cast: false, uv: false });
+        lm.userData.ifc = marks;
+        if (x - 1.5 < ex0 || x + 1.5 > ex1) lm.userData.ifcSkip = true;
+      }
     }
     // driveway & path
     const paving = (name) => ({ cls: 'IfcSlab', type: 'USERDEFINED', objectType: 'Paving', name });
@@ -1079,7 +1095,7 @@ export class Viewer3D {
     // street trees in the sidewalk, with tree pits
     const pitMat = new THREE.MeshStandardMaterial({ map: tex('mulch', '#4A3A2E'), roughness: 1, name: 'Tree pit mulch' });
     const street = STREET_SPECIES[garden] || 'oak';
-    for (let x = px0 - 13.5; x < px1 + 14; x += 9) {
+    for (let x = px0 - 13.5; !real && x < px1 + 14; x += 9) {
       if ([s.driveway, s.path].some((r) => r && x > r.x - 1.5 && x < r.x + r.w + 1.5)) continue;
       this.box(g, 1.1, 0.085, 1.1, pitMat, W(x), 0.043, Z(py0 - 1.1), { cast: false, ox: x, oz: py0 }).userData.ifc = { cls: 'IfcCivilElement', name: 'Tree pit' };
       plantTree(street, W(x), Z(py0 - 1.1), rand, g, foliage, 0.9);
@@ -1103,6 +1119,65 @@ export class Viewer3D {
     scatterGrass(g, { x0: W(px0), x1: W(px1), z0: Z(py1), z1: Z(py0) }, free, Math.min(26000, Math.round(lawnArea * 24)), rand);
     void boxUV;
     this.plotBounds = { px0, px1, py0, py1 };
+  }
+
+  /**
+   * Satellite imagery and neighbouring buildings around a drawn lot, added when they arrive.
+   * The imagery is placed by its corner coordinates through the lot's frame, so it lines up with
+   * the lot exactly as drawn. Buildings on the lot itself are left out: the new house replaces them.
+   */
+  loadSurroundings(d) {
+    const b = d.brief, s = d.site, env = this.envGroup;
+    const token = (this.siteToken = {});
+    const F = lotFrame(b.lot);
+    const [lat, lng] = b.lot.center || [F.lat0, F.lng0];
+    const radius = Math.min(220, Math.max(130, Math.max(b.plotW, b.plotD) * 4));
+    const house = ([la, ln]) => { const [px, py] = toPlot(F, la, ln); return [px - s.ox, py - s.oy]; };
+    const credits = new Set();
+    const report = () => this.cb.onCredit?.(credits.size ? [...credits].join(' · ') : null);
+    this.cb.onCredit?.('Loading the real surroundings…');
+    const live = () => this.siteToken === token && this.envGroup === env;
+    loadImagery(lat, lng, radius).then((img) => {
+      if (!live()) return;
+      if (!img) { report(); return; }
+      // corners NW, NE, SE, SW of the stitched tiles
+      const c = [img.nw, [img.nw[0], img.se[1]], img.se, [img.se[0], img.nw[1]]].map(house);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(c.flatMap(([x, y]) => [this.wx(x), -0.06, this.wz(y)]), 3));
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2));
+      geo.setIndex([0, 3, 2, 0, 2, 1]);
+      const map = (this.imageryTex ||= new WeakMap()).get(img.canvas) || new THREE.CanvasTexture(img.canvas);
+      map.colorSpace = THREE.SRGBColorSpace;
+      map.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+      this.imageryTex.set(img.canvas, map);
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map, roughness: 1, metalness: 0, transparent: true, depthWrite: false, side: THREE.DoubleSide, name: 'Satellite imagery' }));
+      mesh.receiveShadow = true; mesh.renderOrder = -1;
+      env.add(mesh);
+      credits.add(IMAGERY_CREDIT); report();
+      this.dirty = true;
+    });
+    loadBuildings(lat, lng, radius).then((list) => {
+      if (!live() || !list?.length) return;
+      const mat = new THREE.MeshStandardMaterial({ color: '#DAD6CE', roughness: 0.92, name: 'Neighbouring buildings' });
+      let n = 0;
+      for (const bl of list) {
+        if (n >= 150) break;
+        let pts = bl.ring.map(house);
+        const [fx, fy] = pts[0], [lx, ly] = pts[pts.length - 1];
+        if (Math.hypot(fx - lx, fy - ly) < 0.01) pts = pts.slice(0, -1);
+        if (pts.length < 3 || pts.some(([x, y]) => pointInPoly(x, y, s.lot))) continue;
+        const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length, cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+        if (pointInPoly(cx, cy, s.lot)) continue;
+        const shape = new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(this.wx(x), -this.wz(y))));
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: bl.height, bevelEnabled: false });
+        geo.rotateX(-Math.PI / 2); // extrude upwards: shape (x, -z) → world (x, z), depth → height
+        const m = new THREE.Mesh(geo, mat);
+        m.castShadow = true; m.receiveShadow = true;
+        env.add(m); n++;
+      }
+      if (n) { credits.add(BUILDINGS_CREDIT); report(); this.dirty = true; }
+    });
   }
 
   /** Boundary walls or fences along every edge of a drawn lot. Angled edges are built as rotated runs. */
@@ -1146,7 +1221,7 @@ export class Viewer3D {
     const t = (hour - 6) / 12; // 0..1 from 6:00 to 18:00
     const elev = Math.max(3, Math.sin(Math.min(Math.max(t, 0), 1) * Math.PI) * 62 + (hour > 18 || hour < 6 ? -8 : 0));
     const azC = b.hemisphere === 'S' ? 90 - t * 180 : 90 + t * 180; // compass azimuth
-    const backAz = AZ[compass('N', b.street)];
+    const backAz = backAzimuth(b);
     const phi = (azC - backAz) * DEG;
     const el = elev * DEG;
     const dir = new THREE.Vector3(Math.sin(phi) * Math.cos(el), Math.sin(el), -Math.cos(phi) * Math.cos(el));
@@ -1183,7 +1258,14 @@ export class Viewer3D {
     this.dirty = true;
   }
   setLevel(level) { this.level = level; this.applyVisibility(); if (this.mode === 'walk') { this.walkLevelIdx = level === 'all' ? 0 : level; this.camera.position.y = this.elev(this.walkLevelIdx) + 1.62; } this.dirty = true; }
-  setToggle(k, v) { this.toggles[k] = v; this.applyVisibility(); this.dirty = true; }
+  setToggle(k, v) {
+    if (k === 'map') {
+      // real surroundings change the ground and street, so the site is rebuilt
+      if (this.toggles.map !== v) { this.toggles.map = v; if (this.design) this.setDesign(this.design); }
+      return;
+    }
+    this.toggles[k] = v; this.applyVisibility(); this.dirty = true;
+  }
 
   applyVisibility() {
     if (!this.design) return;
@@ -1197,6 +1279,7 @@ export class Viewer3D {
     this.furnGroups.forEach((g) => (g.visible = this.toggles.furniture));
     this.roofGroup.visible = roof;
     this.siteGroup.visible = this.toggles.site;
+    if (this.envGroup) this.envGroup.visible = this.toggles.site;
     this.clipPlane.constant = clip;
     this.pickEnabled = mode === 'section' || (mode === 'exterior' && !all);
     for (const o of this.labelObjs) o.visible = this.toggles.labels && labels && o.userData.level === lvl;
@@ -1345,7 +1428,7 @@ export class Viewer3D {
       if (this.design) {
         const fwd = new THREE.Vector3(); this.camera.getWorldDirection(fwd);
         const phi = Math.atan2(fwd.x, -fwd.z) / DEG;
-        const heading = (AZ[compass('N', this.design.brief.street)] + phi + 360) % 360;
+        const heading = (backAzimuth(this.design.brief) + phi + 360) % 360;
         this.cb.onCompass?.(heading);
       }
     }
@@ -1366,11 +1449,17 @@ export class Viewer3D {
       const exp = new GLTFExporter();
       const labels = this.labelObjs.map((o) => [o, o.parent]);
       labels.forEach(([o, p]) => p.remove(o));
+      // the satellite imagery and neighbouring buildings are third-party data: they stay out of exports
+      if (this.envGroup?.parent) labels.push([this.envGroup, this.envGroup.parent]);
+      labels.forEach(([o, p]) => p.remove(o));
       exp.parse(this.world, (glb) => { labels.forEach(([o, p]) => p.add(o)); res(new Blob([glb], { type: 'model/gltf-binary' })); },
         (err) => { labels.forEach(([o, p]) => p.add(o)); rej(err); }, { binary: true, onlyVisible: false });
     });
   }
 }
+
+/** Compass bearing of the plan's +y (away from the street): exact for a drawn lot, else the cardinal direction. */
+function backAzimuth(b) { return b.lot?.poly ? (b.lot.bearing + 180) % 360 : AZ[compass('N', b.street)]; }
 
 function d_styleTile(d) { return ['industrial', 'mediterranean'].includes(d.styleKey); }
 

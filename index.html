@@ -264,6 +264,7 @@
                     <label class="dd-check"><input type="checkbox" data-layer="dims" checked /> Dimensions on plan</label>
                     <label class="dd-check"><input type="checkbox" data-layer="roof" checked /> Roof in 3D</label>
                     <label class="dd-check"><input type="checkbox" data-layer="labels" checked /> Room names in 3D</label>
+                    <label class="dd-check" id="mapLayerRow" hidden><input type="checkbox" data-layer="map" checked /> Real surroundings in 3D</label>
                   </div>
                 </div>
               </div>
@@ -283,6 +284,7 @@
                 <div class="compass" title="North"><svg id="compass3d" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="var(--surface)" stroke="var(--line-strong)"/><path d="M20 6l4.5 14h-9z" fill="var(--green)"/><path d="M20 34l4.5-14h-9z" fill="var(--line-strong)"/></svg><span>N</span></div>
                 <div class="walk-hint" id="walkHint">Click the view, then use the mouse to look. <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to move, <kbd>Q</kbd> and <kbd>E</kbd> to change floor, <kbd>Esc</kbd> to stop.</div>
                 <div class="crosshair" aria-hidden="true"></div>
+                <div class="map-credit" id="mapCredit" hidden></div>
               </div>
             </div>
           </section>

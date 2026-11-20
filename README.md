@@ -108,6 +108,7 @@ How the drawn lot is used (`js/lot.js`):
 - A largest-rectangle sweep finds the widest street-aligned footprint at every depth. That caps the generator, and the house goes where it fits nearest the street, centred on the frontage. This works for concave lots too.
 - The planning rules swap the two rectangle setback checks for one **Setbacks** check: the footprint, garage included, must fit inside the lot. Site coverage, floor area ratio and planted ground use the true lot area. The patio and pool shrink, or are left out, to stay inside the boundary.
 - The 3D view builds fences or walls along every lot edge, angled ones included. Trees, shrubs and grass stay inside the lot. The Overview tab shows a site plan.
+- **Real surroundings in 3D** (`js/surroundings.js`): around a drawn lot, the 3D view lays satellite imagery of the real place on the ground, about 130 to 220 m around the lot. It is the same imagery the lot was drawn on, placed through the lot's own coordinate frame, so the two line up. The plot itself shows the new design (lawn, boundary, planting) in place of what stands there today. The made-up street is left out, since the real street is in the imagery. When OpenStreetMap's Overpass service answers, neighbouring buildings appear as plain massing blocks, with heights from their tags or typical values; when it is busy, the imagery shows alone. The sun and compass use the lot's exact street bearing, so shadows match the photo. A credit line shows in the 3D view, and **Layers → Real surroundings in 3D** switches it off. Imagery and neighbours are third-party data and are not included in the IFC or GLB exports.
 
 Services the map uses, only once it is opened: map imagery from Esri World Imagery and OpenStreetMap tiles; address search and street detection from OpenStreetMap Nominatim, with the Overpass API as a fallback for street detection. Leaflet 1.9.4 is vendored in `vendor/leaflet/` and loaded on first use. The drawn lot, including its coordinates and address, is saved only in the browser's local storage and in exports the user makes. Check each provider's usage terms before heavy or commercial use; for that, a keyed imagery provider is the usual choice.
 
@@ -133,6 +134,7 @@ js/engine.js          layout generator, walls/openings, scoring, recommender, fi
 js/rules.js           planning rules: envelope caps, compliance check, diagnosis, fixes
 js/lot.js             drawn lots: projection, street frame, buildable grid, largest-rectangle fit
 js/sitemap.js         the optional map: Leaflet, address search, drawing, street detection
+js/surroundings.js    satellite imagery and neighbouring buildings for the 3D view of a drawn lot
 js/solver.js          exact band-width QP and band-assignment branch and bound
 js/fixworker.js       runs the fix search off the main thread
 js/furniture.js       furniture layout solver

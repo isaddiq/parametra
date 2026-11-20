@@ -107,14 +107,24 @@ export function buildLot(latlng, front = 0) {
     return outY > 0.6 ? 'rear' : 'side';
   });
   const lengths = poly.map((p, i) => { const q = poly[(i + 1) % n]; return Math.round(Math.hypot(q[0] - p[0], q[1] - p[1]) * 10) / 10; });
+  // the transform from latitude/longitude to plot coordinates (see toPlot)
+  const frame = { lat0: F.lat0, lng0: F.lng0, ax: A[0], ay: A[1], xx: xAx[0], xy: xAx[1], nx: nIn[0], ny: nIn[1], minX, minY };
   return {
-    latlng, front, poly, kinds, lengths,
+    latlng, front, poly, kinds, lengths, frame,
     area: Math.round(area), frontage: Math.round(len * 10) / 10,
     plotW: Math.round(plotW * 10) / 10, plotD: Math.round(plotD * 10) / 10,
     bearing, street: ['N', 'E', 'S', 'W'][Math.round(bearing / 90) % 4],
     hemisphere: F.lat0 >= 0 ? 'N' : 'S', center: [F.lat0, F.lng0],
   };
 }
+
+/** Plot coordinates (metres) of a latitude/longitude, in a drawn lot's frame. */
+export function toPlot(f, lat, lng) {
+  const e = (lng - f.lng0) * DEG * R * Math.cos(f.lat0 * DEG) - f.ax, n = (lat - f.lat0) * DEG * R - f.ay;
+  return [e * f.xx + n * f.xy - f.minX, e * f.nx + n * f.ny - f.minY];
+}
+/** A lot's frame; lots saved before frames were stored are rebuilt from their corners. */
+export const lotFrame = (lot) => lot.frame || buildLot(lot.latlng, lot.front).frame;
 
 // ── Buildable capacity ───────────────────────────────────────
 const cache = new Map();
